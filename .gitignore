@@ -1,0 +1,9 @@
+/build/
+/_build/
+/.cache/
+*.o
+*.a
+*.so
+*.tar
+*.tar.gz
+*.tar.zst

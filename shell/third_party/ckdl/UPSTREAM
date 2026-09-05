@@ -1,0 +1,5 @@
+name=ckdl
+url=https://github.com/tjol/ckdl.git
+commit=c9c33fe64446287215e80705545139d92a48f829
+license=MIT
+scope=C parser/emitter source and public headers

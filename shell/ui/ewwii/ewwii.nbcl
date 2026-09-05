@@ -1,0 +1,2927 @@
+import core.json
+
+Listen "onyrion_state" {
+    initial = "{\"generation\":0,\"workspaces\":[],\"groups\":[],\"windows\":[]}"
+    cmd = "${ONYRION_SHELL_BIN:-onyrion-shell} watch-state --ewwii ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+}
+
+Listen "onyrion_tray" {
+    initial = "{\"items\":[]}"
+    cmd = "${ONYRION_TRAY_BIN:-onyrion-shell} tray watch"
+}
+
+Listen "onyrion_status" {
+    initial = "{\"clock\":\"--:--\",\"battery\":\"BAT --\",\"network\":\"NET --\",\"audio\":\"VOL --\",\"audio_source\":\"none\"}"
+    cmd = "${ONYRION_SHELL_BIN:-onyrion-shell} watch-status"
+}
+
+Listen "onyrion_control" {
+    initial = "{\"wifi\":{\"available\":false,\"enabled\":false,\"hardware_enabled\":false,\"connection\":null,\"display\":\"Wi-Fi · unavailable\"},\"bluetooth\":{\"available\":false,\"powered\":false,\"alias\":null,\"display\":\"Bluetooth · unavailable\",\"devices\":[]},\"power_profile\":{\"available\":false,\"active\":null,\"display\":\"Power profile · unavailable\",\"profiles\":[]},\"battery\":{\"available\":false,\"percentage\":0,\"state\":0,\"time_to_full\":0,\"time_to_empty\":0,\"icon\":null,\"display\":\"Battery · unavailable\"}}"
+    cmd = "${ONYRION_CONTROL_BIN:-onyrion-control} watch"
+}
+
+Listen "onyrion_audio" {
+    initial = "{\"sink\":{\"available\":false,\"name\":null,\"description\":null,\"volume\":0,\"muted\":false,\"backend\":\"unavailable\",\"display\":\"VOL --\"},\"source\":{\"available\":false,\"name\":null,\"description\":null,\"volume\":0,\"muted\":false,\"backend\":\"unavailable\",\"display\":\"MIC --\"}}"
+    cmd = "${ONYRION_CONTROL_BIN:-onyrion-control} audio watch"
+}
+
+Listen "onyrion_audio_devices" {
+    initial = "{\"default_sink\":null,\"default_source\":null,\"configured_sink\":null,\"configured_source\":null,\"outputs\":[],\"inputs\":[]}"
+    cmd = "${ONYRION_CONTROL_BIN:-onyrion-control} audio devices watch"
+}
+
+Listen "onyrion_audio_streams" {
+    initial = "{\"playback\":[],\"capture\":[]}"
+    cmd = "${ONYRION_CONTROL_BIN:-onyrion-control} audio streams watch"
+}
+
+Listen "onyrion_wifi_networks" {
+    initial = "{\"available\":false,\"enabled\":false,\"hardware_enabled\":false,\"device\":null,\"device_path\":null,\"active_bssid\":null,\"active_ssid\":null,\"last_scan\":-1,\"networks\":[]}"
+    cmd = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi networks watch"
+}
+
+Window "onyrion-notifications" {
+    monitor = 0
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+
+    geometry = {
+        x = "16px"
+        y = "56px"
+        width = "420px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        widget_name = "onyrion-notification-list"
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-notifications"
+    }
+}
+Window "onyrion-background" {
+    monitor = 0
+    stacking = "bg"
+    exclusive = false
+    focusable = "none"
+
+    geometry = {
+        width = "100%"
+        height = "100%"
+        anchor = "center"
+    }
+
+    Image "onyrion-wallpaper" {
+        path = global("onyrion_wallpaper")
+        content_fit = "cover"
+        preserve_aspect_ratio = true
+        can_shrink = true
+        can_target = false
+        hexpand = true
+        vexpand = true
+        class = "onyrion-wallpaper"
+    }
+}
+
+Window "onyrion-bar-0" {
+    monitor = 0
+    stacking = "fg"
+    exclusive = true
+    focusable = "none"
+    namespace = "onyrion-bar-0"
+
+    geometry = {
+        width = "100%"
+        height = "40px"
+        anchor = "top center"
+    }
+
+    Box {
+        class = "onyrion-bar"
+        spacing = 8
+        hexpand = true
+
+        Box {
+            class = "onyrion-bar-left"
+            spacing = 8
+            halign = "start"
+
+            Label {
+                text = "Onyrion"
+                class = "onyrion-brand"
+            }
+
+            Box "onyrion-workspaces-0" {
+                class = "onyrion-workspaces"
+                spacing = 4
+            }
+        }
+
+        Box "onyrion-groups-0" {
+            class = "onyrion-tabs"
+            spacing = 4
+            hexpand = true
+            halign = "fill"
+        }
+
+        Box {
+            class = "onyrion-bar-right"
+            spacing = 4
+            halign = "end"
+
+            Button "onyrion-actions-open-0" {
+                label = "Actions"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-actions-menu-0 --toggle && ${ONYRION_SHELL_BIN:-onyrion-shell} state --ewwii-actions ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+                class = "onyrion-shell-control"
+            }
+
+            Button "onyrion-launcher-0" {
+                label = "Apps"
+                onclick = "${ONYRION_SHELL_BIN:-onyrion-shell} invoke ui:launcher toggle"
+                class = "onyrion-shell-control onyrion-launcher-control"
+            }
+
+            Button "onyrion-terminal-0" {
+                label = "Terminal"
+                onclick = "onyrion-shell terminal"
+                class = "onyrion-shell-control"
+            }
+
+            Label "onyrion-tray-ingest-anchor" {
+                text = ""
+                class = global("onyrion_tray").mutate(|raw| {
+                    return onyrion_tray_ingest(raw)
+                })
+            }
+
+            Custom {
+                name = "onyrion-tray-dynamic-0"
+            }
+
+
+
+
+
+
+
+
+            Label "onyrion-network-0" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "network", raw)
+                })
+            }
+
+            Label "onyrion-audio-0" {
+                text = global("onyrion_audio").mutate(|raw| {
+                    return onyrion_scalar_project("audio", "sink.display", raw)
+                })
+            }
+
+            Label "onyrion-battery-0" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "battery", raw)
+                })
+            }
+
+            Button "onyrion-clock-0" {
+                label = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "clock", raw)
+                })
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-calendar-0 --toggle"
+                class = "onyrion-clock-button"
+            }
+
+            Button "onyrion-quicksettings-open-0" {
+                label = "QS"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-quicksettings-0 --toggle"
+                class = "onyrion-shell-control onyrion-quicksettings-control"
+            }
+
+            Button "onyrion-power-0" {
+                label = "Power"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-powermenu --toggle"
+                class = "onyrion-shell-control"
+            }
+        }
+    }
+}
+
+Window "onyrion-bar-1" {
+    monitor = 1
+    stacking = "fg"
+    exclusive = true
+    focusable = "none"
+    namespace = "onyrion-bar-1"
+
+    geometry = {
+        width = "100%"
+        height = "40px"
+        anchor = "top center"
+    }
+
+    Box {
+        class = "onyrion-bar"
+        spacing = 8
+        hexpand = true
+
+        Box {
+            class = "onyrion-bar-left"
+            spacing = 8
+            halign = "start"
+
+            Label {
+                text = "Onyrion"
+                class = "onyrion-brand"
+            }
+
+            Box "onyrion-workspaces-1" {
+                class = "onyrion-workspaces"
+                spacing = 4
+            }
+        }
+
+        Box "onyrion-groups-1" {
+            class = "onyrion-tabs"
+            spacing = 4
+            hexpand = true
+            halign = "fill"
+        }
+
+        Box {
+            class = "onyrion-bar-right"
+            spacing = 4
+            halign = "end"
+
+            Button "onyrion-actions-open-1" {
+                label = "Actions"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-actions-menu-1 --toggle && ${ONYRION_SHELL_BIN:-onyrion-shell} state --ewwii-actions ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+                class = "onyrion-shell-control"
+            }
+
+            Button "onyrion-launcher-1" {
+                label = "Apps"
+                onclick = "${ONYRION_SHELL_BIN:-onyrion-shell} invoke ui:launcher toggle"
+                class = "onyrion-shell-control onyrion-launcher-control"
+            }
+
+            Button "onyrion-terminal-1" {
+                label = "Terminal"
+                onclick = "onyrion-shell terminal"
+                class = "onyrion-shell-control"
+            }
+
+            Custom {
+                name = "onyrion-tray-dynamic-1"
+            }
+
+
+
+
+
+
+
+
+            Label "onyrion-network-1" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "network", raw)
+                })
+            }
+
+            Label "onyrion-audio-1" {
+                text = global("onyrion_audio").mutate(|raw| {
+                    return onyrion_scalar_project("audio", "sink.display", raw)
+                })
+            }
+
+            Label "onyrion-battery-1" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "battery", raw)
+                })
+            }
+
+            Button "onyrion-clock-1" {
+                label = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "clock", raw)
+                })
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-calendar-1 --toggle"
+                class = "onyrion-clock-button"
+            }
+
+            Button "onyrion-quicksettings-open-1" {
+                label = "QS"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-quicksettings-1 --toggle"
+                class = "onyrion-shell-control onyrion-quicksettings-control"
+            }
+
+            Button "onyrion-power-1" {
+                label = "Power"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-powermenu --toggle"
+                class = "onyrion-shell-control"
+            }
+        }
+    }
+}
+
+Window "onyrion-bar-2" {
+    monitor = 2
+    stacking = "fg"
+    exclusive = true
+    focusable = "none"
+    namespace = "onyrion-bar-2"
+
+    geometry = {
+        width = "100%"
+        height = "40px"
+        anchor = "top center"
+    }
+
+    Box {
+        class = "onyrion-bar"
+        spacing = 8
+        hexpand = true
+
+        Box {
+            class = "onyrion-bar-left"
+            spacing = 8
+            halign = "start"
+
+            Label {
+                text = "Onyrion"
+                class = "onyrion-brand"
+            }
+
+            Box "onyrion-workspaces-2" {
+                class = "onyrion-workspaces"
+                spacing = 4
+            }
+        }
+
+        Box "onyrion-groups-2" {
+            class = "onyrion-tabs"
+            spacing = 4
+            hexpand = true
+            halign = "fill"
+        }
+
+        Box {
+            class = "onyrion-bar-right"
+            spacing = 4
+            halign = "end"
+
+            Button "onyrion-actions-open-2" {
+                label = "Actions"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-actions-menu-2 --toggle && ${ONYRION_SHELL_BIN:-onyrion-shell} state --ewwii-actions ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+                class = "onyrion-shell-control"
+            }
+
+            Button "onyrion-launcher-2" {
+                label = "Apps"
+                onclick = "${ONYRION_SHELL_BIN:-onyrion-shell} invoke ui:launcher toggle"
+                class = "onyrion-shell-control onyrion-launcher-control"
+            }
+
+            Button "onyrion-terminal-2" {
+                label = "Terminal"
+                onclick = "onyrion-shell terminal"
+                class = "onyrion-shell-control"
+            }
+
+            Custom {
+                name = "onyrion-tray-dynamic-2"
+            }
+
+
+
+
+
+
+
+
+            Label "onyrion-network-2" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "network", raw)
+                })
+            }
+
+            Label "onyrion-audio-2" {
+                text = global("onyrion_audio").mutate(|raw| {
+                    return onyrion_scalar_project("audio", "sink.display", raw)
+                })
+            }
+
+            Label "onyrion-battery-2" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "battery", raw)
+                })
+            }
+
+            Button "onyrion-clock-2" {
+                label = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "clock", raw)
+                })
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-calendar-2 --toggle"
+                class = "onyrion-clock-button"
+            }
+
+            Button "onyrion-quicksettings-open-2" {
+                label = "QS"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-quicksettings-2 --toggle"
+                class = "onyrion-shell-control onyrion-quicksettings-control"
+            }
+
+            Button "onyrion-power-2" {
+                label = "Power"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-powermenu --toggle"
+                class = "onyrion-shell-control"
+            }
+        }
+    }
+}
+
+Window "onyrion-bar-3" {
+    monitor = 3
+    stacking = "fg"
+    exclusive = true
+    focusable = "none"
+    namespace = "onyrion-bar-3"
+
+    geometry = {
+        width = "100%"
+        height = "40px"
+        anchor = "top center"
+    }
+
+    Box {
+        class = "onyrion-bar"
+        spacing = 8
+        hexpand = true
+
+        Box {
+            class = "onyrion-bar-left"
+            spacing = 8
+            halign = "start"
+
+            Label {
+                text = "Onyrion"
+                class = "onyrion-brand"
+            }
+
+            Box "onyrion-workspaces-3" {
+                class = "onyrion-workspaces"
+                spacing = 4
+            }
+        }
+
+        Box "onyrion-groups-3" {
+            class = "onyrion-tabs"
+            spacing = 4
+            hexpand = true
+            halign = "fill"
+        }
+
+        Box {
+            class = "onyrion-bar-right"
+            spacing = 4
+            halign = "end"
+
+            Button "onyrion-actions-open-3" {
+                label = "Actions"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-actions-menu-3 --toggle && ${ONYRION_SHELL_BIN:-onyrion-shell} state --ewwii-actions ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+                class = "onyrion-shell-control"
+            }
+
+            Button "onyrion-launcher-3" {
+                label = "Apps"
+                onclick = "${ONYRION_SHELL_BIN:-onyrion-shell} invoke ui:launcher toggle"
+                class = "onyrion-shell-control onyrion-launcher-control"
+            }
+
+            Button "onyrion-terminal-3" {
+                label = "Terminal"
+                onclick = "onyrion-shell terminal"
+                class = "onyrion-shell-control"
+            }
+
+            Custom {
+                name = "onyrion-tray-dynamic-3"
+            }
+
+
+
+
+
+
+
+
+            Label "onyrion-network-3" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "network", raw)
+                })
+            }
+
+            Label "onyrion-audio-3" {
+                text = global("onyrion_audio").mutate(|raw| {
+                    return onyrion_scalar_project("audio", "sink.display", raw)
+                })
+            }
+
+            Label "onyrion-battery-3" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "battery", raw)
+                })
+            }
+
+            Button "onyrion-clock-3" {
+                label = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "clock", raw)
+                })
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-calendar-3 --toggle"
+                class = "onyrion-clock-button"
+            }
+
+            Button "onyrion-quicksettings-open-3" {
+                label = "QS"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-quicksettings-3 --toggle"
+                class = "onyrion-shell-control onyrion-quicksettings-control"
+            }
+
+            Button "onyrion-power-3" {
+                label = "Power"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-powermenu --toggle"
+                class = "onyrion-shell-control"
+            }
+        }
+    }
+}
+
+Window "onyrion-bar-4" {
+    monitor = 4
+    stacking = "fg"
+    exclusive = true
+    focusable = "none"
+    namespace = "onyrion-bar-4"
+
+    geometry = {
+        width = "100%"
+        height = "40px"
+        anchor = "top center"
+    }
+
+    Box {
+        class = "onyrion-bar"
+        spacing = 8
+        hexpand = true
+
+        Box {
+            class = "onyrion-bar-left"
+            spacing = 8
+            halign = "start"
+
+            Label {
+                text = "Onyrion"
+                class = "onyrion-brand"
+            }
+
+            Box "onyrion-workspaces-4" {
+                class = "onyrion-workspaces"
+                spacing = 4
+            }
+        }
+
+        Box "onyrion-groups-4" {
+            class = "onyrion-tabs"
+            spacing = 4
+            hexpand = true
+            halign = "fill"
+        }
+
+        Box {
+            class = "onyrion-bar-right"
+            spacing = 4
+            halign = "end"
+
+            Button "onyrion-actions-open-4" {
+                label = "Actions"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-actions-menu-4 --toggle && ${ONYRION_SHELL_BIN:-onyrion-shell} state --ewwii-actions ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+                class = "onyrion-shell-control"
+            }
+
+            Button "onyrion-launcher-4" {
+                label = "Apps"
+                onclick = "${ONYRION_SHELL_BIN:-onyrion-shell} invoke ui:launcher toggle"
+                class = "onyrion-shell-control onyrion-launcher-control"
+            }
+
+            Button "onyrion-terminal-4" {
+                label = "Terminal"
+                onclick = "onyrion-shell terminal"
+                class = "onyrion-shell-control"
+            }
+
+            Custom {
+                name = "onyrion-tray-dynamic-4"
+            }
+
+
+
+
+
+
+
+
+            Label "onyrion-network-4" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "network", raw)
+                })
+            }
+
+            Label "onyrion-audio-4" {
+                text = global("onyrion_audio").mutate(|raw| {
+                    return onyrion_scalar_project("audio", "sink.display", raw)
+                })
+            }
+
+            Label "onyrion-battery-4" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "battery", raw)
+                })
+            }
+
+            Button "onyrion-clock-4" {
+                label = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "clock", raw)
+                })
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-calendar-4 --toggle"
+                class = "onyrion-clock-button"
+            }
+
+            Button "onyrion-quicksettings-open-4" {
+                label = "QS"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-quicksettings-4 --toggle"
+                class = "onyrion-shell-control onyrion-quicksettings-control"
+            }
+
+            Button "onyrion-power-4" {
+                label = "Power"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-powermenu --toggle"
+                class = "onyrion-shell-control"
+            }
+        }
+    }
+}
+
+Window "onyrion-bar-5" {
+    monitor = 5
+    stacking = "fg"
+    exclusive = true
+    focusable = "none"
+    namespace = "onyrion-bar-5"
+
+    geometry = {
+        width = "100%"
+        height = "40px"
+        anchor = "top center"
+    }
+
+    Box {
+        class = "onyrion-bar"
+        spacing = 8
+        hexpand = true
+
+        Box {
+            class = "onyrion-bar-left"
+            spacing = 8
+            halign = "start"
+
+            Label {
+                text = "Onyrion"
+                class = "onyrion-brand"
+            }
+
+            Box "onyrion-workspaces-5" {
+                class = "onyrion-workspaces"
+                spacing = 4
+            }
+        }
+
+        Box "onyrion-groups-5" {
+            class = "onyrion-tabs"
+            spacing = 4
+            hexpand = true
+            halign = "fill"
+        }
+
+        Box {
+            class = "onyrion-bar-right"
+            spacing = 4
+            halign = "end"
+
+            Button "onyrion-actions-open-5" {
+                label = "Actions"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-actions-menu-5 --toggle && ${ONYRION_SHELL_BIN:-onyrion-shell} state --ewwii-actions ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+                class = "onyrion-shell-control"
+            }
+
+            Button "onyrion-launcher-5" {
+                label = "Apps"
+                onclick = "${ONYRION_SHELL_BIN:-onyrion-shell} invoke ui:launcher toggle"
+                class = "onyrion-shell-control onyrion-launcher-control"
+            }
+
+            Button "onyrion-terminal-5" {
+                label = "Terminal"
+                onclick = "onyrion-shell terminal"
+                class = "onyrion-shell-control"
+            }
+
+            Custom {
+                name = "onyrion-tray-dynamic-5"
+            }
+
+
+
+
+
+
+
+
+            Label "onyrion-network-5" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "network", raw)
+                })
+            }
+
+            Label "onyrion-audio-5" {
+                text = global("onyrion_audio").mutate(|raw| {
+                    return onyrion_scalar_project("audio", "sink.display", raw)
+                })
+            }
+
+            Label "onyrion-battery-5" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "battery", raw)
+                })
+            }
+
+            Button "onyrion-clock-5" {
+                label = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "clock", raw)
+                })
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-calendar-5 --toggle"
+                class = "onyrion-clock-button"
+            }
+
+            Button "onyrion-quicksettings-open-5" {
+                label = "QS"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-quicksettings-5 --toggle"
+                class = "onyrion-shell-control onyrion-quicksettings-control"
+            }
+
+            Button "onyrion-power-5" {
+                label = "Power"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-powermenu --toggle"
+                class = "onyrion-shell-control"
+            }
+        }
+    }
+}
+
+Window "onyrion-bar-6" {
+    monitor = 6
+    stacking = "fg"
+    exclusive = true
+    focusable = "none"
+    namespace = "onyrion-bar-6"
+
+    geometry = {
+        width = "100%"
+        height = "40px"
+        anchor = "top center"
+    }
+
+    Box {
+        class = "onyrion-bar"
+        spacing = 8
+        hexpand = true
+
+        Box {
+            class = "onyrion-bar-left"
+            spacing = 8
+            halign = "start"
+
+            Label {
+                text = "Onyrion"
+                class = "onyrion-brand"
+            }
+
+            Box "onyrion-workspaces-6" {
+                class = "onyrion-workspaces"
+                spacing = 4
+            }
+        }
+
+        Box "onyrion-groups-6" {
+            class = "onyrion-tabs"
+            spacing = 4
+            hexpand = true
+            halign = "fill"
+        }
+
+        Box {
+            class = "onyrion-bar-right"
+            spacing = 4
+            halign = "end"
+
+            Button "onyrion-actions-open-6" {
+                label = "Actions"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-actions-menu-6 --toggle && ${ONYRION_SHELL_BIN:-onyrion-shell} state --ewwii-actions ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+                class = "onyrion-shell-control"
+            }
+
+            Button "onyrion-launcher-6" {
+                label = "Apps"
+                onclick = "${ONYRION_SHELL_BIN:-onyrion-shell} invoke ui:launcher toggle"
+                class = "onyrion-shell-control onyrion-launcher-control"
+            }
+
+            Button "onyrion-terminal-6" {
+                label = "Terminal"
+                onclick = "onyrion-shell terminal"
+                class = "onyrion-shell-control"
+            }
+
+            Custom {
+                name = "onyrion-tray-dynamic-6"
+            }
+
+
+
+
+
+
+
+
+            Label "onyrion-network-6" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "network", raw)
+                })
+            }
+
+            Label "onyrion-audio-6" {
+                text = global("onyrion_audio").mutate(|raw| {
+                    return onyrion_scalar_project("audio", "sink.display", raw)
+                })
+            }
+
+            Label "onyrion-battery-6" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "battery", raw)
+                })
+            }
+
+            Button "onyrion-clock-6" {
+                label = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "clock", raw)
+                })
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-calendar-6 --toggle"
+                class = "onyrion-clock-button"
+            }
+
+            Button "onyrion-quicksettings-open-6" {
+                label = "QS"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-quicksettings-6 --toggle"
+                class = "onyrion-shell-control onyrion-quicksettings-control"
+            }
+
+            Button "onyrion-power-6" {
+                label = "Power"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-powermenu --toggle"
+                class = "onyrion-shell-control"
+            }
+        }
+    }
+}
+
+Window "onyrion-bar-7" {
+    monitor = 7
+    stacking = "fg"
+    exclusive = true
+    focusable = "none"
+    namespace = "onyrion-bar-7"
+
+    geometry = {
+        width = "100%"
+        height = "40px"
+        anchor = "top center"
+    }
+
+    Box {
+        class = "onyrion-bar"
+        spacing = 8
+        hexpand = true
+
+        Box {
+            class = "onyrion-bar-left"
+            spacing = 8
+            halign = "start"
+
+            Label {
+                text = "Onyrion"
+                class = "onyrion-brand"
+            }
+
+            Box "onyrion-workspaces-7" {
+                class = "onyrion-workspaces"
+                spacing = 4
+            }
+        }
+
+        Box "onyrion-groups-7" {
+            class = "onyrion-tabs"
+            spacing = 4
+            hexpand = true
+            halign = "fill"
+        }
+
+        Box {
+            class = "onyrion-bar-right"
+            spacing = 4
+            halign = "end"
+
+            Button "onyrion-actions-open-7" {
+                label = "Actions"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-actions-menu-7 --toggle && ${ONYRION_SHELL_BIN:-onyrion-shell} state --ewwii-actions ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii}"
+                class = "onyrion-shell-control"
+            }
+
+            Button "onyrion-launcher-7" {
+                label = "Apps"
+                onclick = "${ONYRION_SHELL_BIN:-onyrion-shell} invoke ui:launcher toggle"
+                class = "onyrion-shell-control onyrion-launcher-control"
+            }
+
+            Button "onyrion-terminal-7" {
+                label = "Terminal"
+                onclick = "onyrion-shell terminal"
+                class = "onyrion-shell-control"
+            }
+
+            Custom {
+                name = "onyrion-tray-dynamic-7"
+            }
+
+
+
+
+
+
+
+
+            Label "onyrion-network-7" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "network", raw)
+                })
+            }
+
+            Label "onyrion-audio-7" {
+                text = global("onyrion_audio").mutate(|raw| {
+                    return onyrion_scalar_project("audio", "sink.display", raw)
+                })
+            }
+
+            Label "onyrion-battery-7" {
+                text = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "battery", raw)
+                })
+            }
+
+            Button "onyrion-clock-7" {
+                label = global("onyrion_status").mutate(|raw| {
+                    return onyrion_scalar_project("status", "clock", raw)
+                })
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-calendar-7 --toggle"
+                class = "onyrion-clock-button"
+            }
+
+            Button "onyrion-quicksettings-open-7" {
+                label = "QS"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-quicksettings-7 --toggle"
+                class = "onyrion-shell-control onyrion-quicksettings-control"
+            }
+
+            Button "onyrion-power-7" {
+                label = "Power"
+                onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open onyrion-powermenu --toggle"
+                class = "onyrion-shell-control"
+            }
+        }
+    }
+}
+
+Window "onyrion-actions-menu-0" {
+    monitor = 0
+    stacking = "overlay"
+    focusable = "exclusive"
+    namespace = "onyrion-actions-menu-0"
+
+    geometry = {
+        width = "960px"
+        height = "96px"
+        anchor = "top center"
+    }
+
+    Box "onyrion-action-menu-0" {
+        orientation = "h"
+        spacing = 4
+        class = "onyrion-powermenu"
+    }
+}
+
+Window "onyrion-actions-menu-1" {
+    monitor = 1
+    stacking = "overlay"
+    focusable = "exclusive"
+    namespace = "onyrion-actions-menu-1"
+
+    geometry = {
+        width = "960px"
+        height = "96px"
+        anchor = "top center"
+    }
+
+    Box "onyrion-action-menu-1" {
+        orientation = "h"
+        spacing = 4
+        class = "onyrion-powermenu"
+    }
+}
+
+Window "onyrion-actions-menu-2" {
+    monitor = 2
+    stacking = "overlay"
+    focusable = "exclusive"
+    namespace = "onyrion-actions-menu-2"
+
+    geometry = {
+        width = "960px"
+        height = "96px"
+        anchor = "top center"
+    }
+
+    Box "onyrion-action-menu-2" {
+        orientation = "h"
+        spacing = 4
+        class = "onyrion-powermenu"
+    }
+}
+
+Window "onyrion-actions-menu-3" {
+    monitor = 3
+    stacking = "overlay"
+    focusable = "exclusive"
+    namespace = "onyrion-actions-menu-3"
+
+    geometry = {
+        width = "960px"
+        height = "96px"
+        anchor = "top center"
+    }
+
+    Box "onyrion-action-menu-3" {
+        orientation = "h"
+        spacing = 4
+        class = "onyrion-powermenu"
+    }
+}
+
+Window "onyrion-actions-menu-4" {
+    monitor = 4
+    stacking = "overlay"
+    focusable = "exclusive"
+    namespace = "onyrion-actions-menu-4"
+
+    geometry = {
+        width = "960px"
+        height = "96px"
+        anchor = "top center"
+    }
+
+    Box "onyrion-action-menu-4" {
+        orientation = "h"
+        spacing = 4
+        class = "onyrion-powermenu"
+    }
+}
+
+Window "onyrion-actions-menu-5" {
+    monitor = 5
+    stacking = "overlay"
+    focusable = "exclusive"
+    namespace = "onyrion-actions-menu-5"
+
+    geometry = {
+        width = "960px"
+        height = "96px"
+        anchor = "top center"
+    }
+
+    Box "onyrion-action-menu-5" {
+        orientation = "h"
+        spacing = 4
+        class = "onyrion-powermenu"
+    }
+}
+
+Window "onyrion-actions-menu-6" {
+    monitor = 6
+    stacking = "overlay"
+    focusable = "exclusive"
+    namespace = "onyrion-actions-menu-6"
+
+    geometry = {
+        width = "960px"
+        height = "96px"
+        anchor = "top center"
+    }
+
+    Box "onyrion-action-menu-6" {
+        orientation = "h"
+        spacing = 4
+        class = "onyrion-powermenu"
+    }
+}
+
+Window "onyrion-actions-menu-7" {
+    monitor = 7
+    stacking = "overlay"
+    focusable = "exclusive"
+    namespace = "onyrion-actions-menu-7"
+
+    geometry = {
+        width = "960px"
+        height = "96px"
+        anchor = "top center"
+    }
+
+    Box "onyrion-action-menu-7" {
+        orientation = "h"
+        spacing = 4
+        class = "onyrion-powermenu"
+    }
+}
+
+Window "onyrion-quicksettings-0" {
+    monitor = 0
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-quicksettings-0"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-quicksettings-title-0" {
+            text = "Quick Settings"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-quicksettings-wifi-state-0" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "wifi.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-wifi-toggle-0" {
+            label = "Toggle Wi-Fi"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi toggle"
+        }
+
+        Button "onyrion-quicksettings-wifi-networks-0" {
+            label = "Wi-Fi networks"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 0 --toggle onyrion-wifi-networks"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-bluetooth-state-0" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "bluetooth.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-bluetooth-toggle-0" {
+            label = "Toggle Bluetooth"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} bluetooth toggle"
+        }
+
+        Button "onyrion-quicksettings-bluetooth-devices-0" {
+            label = "Bluetooth devices"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 0 --toggle onyrion-bluetooth-devices"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-audio-sink-0" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "sink.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-sink-down-0" {
+                label = "Vol -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change -0.05"
+            }
+
+            Button "onyrion-audio-sink-mute-0" {
+                label = "Mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink mute toggle"
+            }
+
+            Button "onyrion-audio-sink-up-0" {
+                label = "Vol +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-audio-source-0" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "source.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-source-down-0" {
+                label = "Mic -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change -0.05"
+            }
+
+            Button "onyrion-audio-source-mute-0" {
+                label = "Mic mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source mute toggle"
+            }
+
+            Button "onyrion-audio-source-up-0" {
+                label = "Mic +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-battery-0" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "battery.display", raw)
+            })
+        }
+
+        Label "onyrion-quicksettings-power-state-0" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "power_profile.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-profiles"
+
+            Button "onyrion-profile-power-saver-0" {
+                label = "Saver"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set power-saver"
+            }
+
+            Button "onyrion-profile-balanced-0" {
+                label = "Balanced"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set balanced"
+            }
+
+            Button "onyrion-profile-performance-0" {
+                label = "Performance"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set performance"
+            }
+        }
+
+        Button "onyrion-quicksettings-audio-mixer-0" {
+            label = "Audio mixer"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 0 --toggle onyrion-audio-mixer"
+            class = "onyrion-shell-control"
+        }
+
+        Button "onyrion-quicksettings-close-0" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-quicksettings-0"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-quicksettings-1" {
+    monitor = 1
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-quicksettings-1"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-quicksettings-title-1" {
+            text = "Quick Settings"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-quicksettings-wifi-state-1" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "wifi.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-wifi-toggle-1" {
+            label = "Toggle Wi-Fi"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi toggle"
+        }
+
+        Button "onyrion-quicksettings-wifi-networks-1" {
+            label = "Wi-Fi networks"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 1 --toggle onyrion-wifi-networks"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-bluetooth-state-1" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "bluetooth.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-bluetooth-toggle-1" {
+            label = "Toggle Bluetooth"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} bluetooth toggle"
+        }
+
+        Button "onyrion-quicksettings-bluetooth-devices-1" {
+            label = "Bluetooth devices"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 1 --toggle onyrion-bluetooth-devices"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-audio-sink-1" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "sink.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-sink-down-1" {
+                label = "Vol -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change -0.05"
+            }
+
+            Button "onyrion-audio-sink-mute-1" {
+                label = "Mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink mute toggle"
+            }
+
+            Button "onyrion-audio-sink-up-1" {
+                label = "Vol +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-audio-source-1" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "source.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-source-down-1" {
+                label = "Mic -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change -0.05"
+            }
+
+            Button "onyrion-audio-source-mute-1" {
+                label = "Mic mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source mute toggle"
+            }
+
+            Button "onyrion-audio-source-up-1" {
+                label = "Mic +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-battery-1" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "battery.display", raw)
+            })
+        }
+
+        Label "onyrion-quicksettings-power-state-1" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "power_profile.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-profiles"
+
+            Button "onyrion-profile-power-saver-1" {
+                label = "Saver"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set power-saver"
+            }
+
+            Button "onyrion-profile-balanced-1" {
+                label = "Balanced"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set balanced"
+            }
+
+            Button "onyrion-profile-performance-1" {
+                label = "Performance"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set performance"
+            }
+        }
+
+        Button "onyrion-quicksettings-audio-mixer-1" {
+            label = "Audio mixer"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 1 --toggle onyrion-audio-mixer"
+            class = "onyrion-shell-control"
+        }
+
+        Button "onyrion-quicksettings-close-1" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-quicksettings-1"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-quicksettings-2" {
+    monitor = 2
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-quicksettings-2"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-quicksettings-title-2" {
+            text = "Quick Settings"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-quicksettings-wifi-state-2" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "wifi.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-wifi-toggle-2" {
+            label = "Toggle Wi-Fi"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi toggle"
+        }
+
+        Button "onyrion-quicksettings-wifi-networks-2" {
+            label = "Wi-Fi networks"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 2 --toggle onyrion-wifi-networks"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-bluetooth-state-2" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "bluetooth.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-bluetooth-toggle-2" {
+            label = "Toggle Bluetooth"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} bluetooth toggle"
+        }
+
+        Button "onyrion-quicksettings-bluetooth-devices-2" {
+            label = "Bluetooth devices"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 2 --toggle onyrion-bluetooth-devices"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-audio-sink-2" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "sink.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-sink-down-2" {
+                label = "Vol -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change -0.05"
+            }
+
+            Button "onyrion-audio-sink-mute-2" {
+                label = "Mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink mute toggle"
+            }
+
+            Button "onyrion-audio-sink-up-2" {
+                label = "Vol +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-audio-source-2" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "source.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-source-down-2" {
+                label = "Mic -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change -0.05"
+            }
+
+            Button "onyrion-audio-source-mute-2" {
+                label = "Mic mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source mute toggle"
+            }
+
+            Button "onyrion-audio-source-up-2" {
+                label = "Mic +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-battery-2" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "battery.display", raw)
+            })
+        }
+
+        Label "onyrion-quicksettings-power-state-2" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "power_profile.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-profiles"
+
+            Button "onyrion-profile-power-saver-2" {
+                label = "Saver"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set power-saver"
+            }
+
+            Button "onyrion-profile-balanced-2" {
+                label = "Balanced"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set balanced"
+            }
+
+            Button "onyrion-profile-performance-2" {
+                label = "Performance"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set performance"
+            }
+        }
+
+        Button "onyrion-quicksettings-audio-mixer-2" {
+            label = "Audio mixer"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 2 --toggle onyrion-audio-mixer"
+            class = "onyrion-shell-control"
+        }
+
+        Button "onyrion-quicksettings-close-2" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-quicksettings-2"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-quicksettings-3" {
+    monitor = 3
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-quicksettings-3"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-quicksettings-title-3" {
+            text = "Quick Settings"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-quicksettings-wifi-state-3" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "wifi.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-wifi-toggle-3" {
+            label = "Toggle Wi-Fi"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi toggle"
+        }
+
+        Button "onyrion-quicksettings-wifi-networks-3" {
+            label = "Wi-Fi networks"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 3 --toggle onyrion-wifi-networks"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-bluetooth-state-3" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "bluetooth.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-bluetooth-toggle-3" {
+            label = "Toggle Bluetooth"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} bluetooth toggle"
+        }
+
+        Button "onyrion-quicksettings-bluetooth-devices-3" {
+            label = "Bluetooth devices"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 3 --toggle onyrion-bluetooth-devices"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-audio-sink-3" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "sink.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-sink-down-3" {
+                label = "Vol -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change -0.05"
+            }
+
+            Button "onyrion-audio-sink-mute-3" {
+                label = "Mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink mute toggle"
+            }
+
+            Button "onyrion-audio-sink-up-3" {
+                label = "Vol +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-audio-source-3" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "source.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-source-down-3" {
+                label = "Mic -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change -0.05"
+            }
+
+            Button "onyrion-audio-source-mute-3" {
+                label = "Mic mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source mute toggle"
+            }
+
+            Button "onyrion-audio-source-up-3" {
+                label = "Mic +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-battery-3" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "battery.display", raw)
+            })
+        }
+
+        Label "onyrion-quicksettings-power-state-3" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "power_profile.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-profiles"
+
+            Button "onyrion-profile-power-saver-3" {
+                label = "Saver"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set power-saver"
+            }
+
+            Button "onyrion-profile-balanced-3" {
+                label = "Balanced"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set balanced"
+            }
+
+            Button "onyrion-profile-performance-3" {
+                label = "Performance"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set performance"
+            }
+        }
+
+        Button "onyrion-quicksettings-audio-mixer-3" {
+            label = "Audio mixer"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 3 --toggle onyrion-audio-mixer"
+            class = "onyrion-shell-control"
+        }
+
+        Button "onyrion-quicksettings-close-3" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-quicksettings-3"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-quicksettings-4" {
+    monitor = 4
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-quicksettings-4"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-quicksettings-title-4" {
+            text = "Quick Settings"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-quicksettings-wifi-state-4" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "wifi.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-wifi-toggle-4" {
+            label = "Toggle Wi-Fi"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi toggle"
+        }
+
+        Button "onyrion-quicksettings-wifi-networks-4" {
+            label = "Wi-Fi networks"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 4 --toggle onyrion-wifi-networks"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-bluetooth-state-4" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "bluetooth.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-bluetooth-toggle-4" {
+            label = "Toggle Bluetooth"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} bluetooth toggle"
+        }
+
+        Button "onyrion-quicksettings-bluetooth-devices-4" {
+            label = "Bluetooth devices"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 4 --toggle onyrion-bluetooth-devices"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-audio-sink-4" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "sink.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-sink-down-4" {
+                label = "Vol -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change -0.05"
+            }
+
+            Button "onyrion-audio-sink-mute-4" {
+                label = "Mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink mute toggle"
+            }
+
+            Button "onyrion-audio-sink-up-4" {
+                label = "Vol +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-audio-source-4" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "source.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-source-down-4" {
+                label = "Mic -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change -0.05"
+            }
+
+            Button "onyrion-audio-source-mute-4" {
+                label = "Mic mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source mute toggle"
+            }
+
+            Button "onyrion-audio-source-up-4" {
+                label = "Mic +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-battery-4" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "battery.display", raw)
+            })
+        }
+
+        Label "onyrion-quicksettings-power-state-4" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "power_profile.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-profiles"
+
+            Button "onyrion-profile-power-saver-4" {
+                label = "Saver"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set power-saver"
+            }
+
+            Button "onyrion-profile-balanced-4" {
+                label = "Balanced"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set balanced"
+            }
+
+            Button "onyrion-profile-performance-4" {
+                label = "Performance"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set performance"
+            }
+        }
+
+        Button "onyrion-quicksettings-audio-mixer-4" {
+            label = "Audio mixer"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 4 --toggle onyrion-audio-mixer"
+            class = "onyrion-shell-control"
+        }
+
+        Button "onyrion-quicksettings-close-4" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-quicksettings-4"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-quicksettings-5" {
+    monitor = 5
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-quicksettings-5"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-quicksettings-title-5" {
+            text = "Quick Settings"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-quicksettings-wifi-state-5" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "wifi.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-wifi-toggle-5" {
+            label = "Toggle Wi-Fi"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi toggle"
+        }
+
+        Button "onyrion-quicksettings-wifi-networks-5" {
+            label = "Wi-Fi networks"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 5 --toggle onyrion-wifi-networks"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-bluetooth-state-5" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "bluetooth.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-bluetooth-toggle-5" {
+            label = "Toggle Bluetooth"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} bluetooth toggle"
+        }
+
+        Button "onyrion-quicksettings-bluetooth-devices-5" {
+            label = "Bluetooth devices"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 5 --toggle onyrion-bluetooth-devices"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-audio-sink-5" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "sink.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-sink-down-5" {
+                label = "Vol -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change -0.05"
+            }
+
+            Button "onyrion-audio-sink-mute-5" {
+                label = "Mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink mute toggle"
+            }
+
+            Button "onyrion-audio-sink-up-5" {
+                label = "Vol +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-audio-source-5" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "source.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-source-down-5" {
+                label = "Mic -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change -0.05"
+            }
+
+            Button "onyrion-audio-source-mute-5" {
+                label = "Mic mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source mute toggle"
+            }
+
+            Button "onyrion-audio-source-up-5" {
+                label = "Mic +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-battery-5" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "battery.display", raw)
+            })
+        }
+
+        Label "onyrion-quicksettings-power-state-5" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "power_profile.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-profiles"
+
+            Button "onyrion-profile-power-saver-5" {
+                label = "Saver"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set power-saver"
+            }
+
+            Button "onyrion-profile-balanced-5" {
+                label = "Balanced"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set balanced"
+            }
+
+            Button "onyrion-profile-performance-5" {
+                label = "Performance"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set performance"
+            }
+        }
+
+        Button "onyrion-quicksettings-audio-mixer-5" {
+            label = "Audio mixer"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 5 --toggle onyrion-audio-mixer"
+            class = "onyrion-shell-control"
+        }
+
+        Button "onyrion-quicksettings-close-5" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-quicksettings-5"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-quicksettings-6" {
+    monitor = 6
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-quicksettings-6"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-quicksettings-title-6" {
+            text = "Quick Settings"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-quicksettings-wifi-state-6" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "wifi.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-wifi-toggle-6" {
+            label = "Toggle Wi-Fi"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi toggle"
+        }
+
+        Button "onyrion-quicksettings-wifi-networks-6" {
+            label = "Wi-Fi networks"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 6 --toggle onyrion-wifi-networks"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-bluetooth-state-6" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "bluetooth.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-bluetooth-toggle-6" {
+            label = "Toggle Bluetooth"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} bluetooth toggle"
+        }
+
+        Button "onyrion-quicksettings-bluetooth-devices-6" {
+            label = "Bluetooth devices"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 6 --toggle onyrion-bluetooth-devices"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-audio-sink-6" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "sink.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-sink-down-6" {
+                label = "Vol -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change -0.05"
+            }
+
+            Button "onyrion-audio-sink-mute-6" {
+                label = "Mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink mute toggle"
+            }
+
+            Button "onyrion-audio-sink-up-6" {
+                label = "Vol +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-audio-source-6" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "source.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-source-down-6" {
+                label = "Mic -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change -0.05"
+            }
+
+            Button "onyrion-audio-source-mute-6" {
+                label = "Mic mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source mute toggle"
+            }
+
+            Button "onyrion-audio-source-up-6" {
+                label = "Mic +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-battery-6" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "battery.display", raw)
+            })
+        }
+
+        Label "onyrion-quicksettings-power-state-6" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "power_profile.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-profiles"
+
+            Button "onyrion-profile-power-saver-6" {
+                label = "Saver"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set power-saver"
+            }
+
+            Button "onyrion-profile-balanced-6" {
+                label = "Balanced"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set balanced"
+            }
+
+            Button "onyrion-profile-performance-6" {
+                label = "Performance"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set performance"
+            }
+        }
+
+        Button "onyrion-quicksettings-audio-mixer-6" {
+            label = "Audio mixer"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 6 --toggle onyrion-audio-mixer"
+            class = "onyrion-shell-control"
+        }
+
+        Button "onyrion-quicksettings-close-6" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-quicksettings-6"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-quicksettings-7" {
+    monitor = 7
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-quicksettings-7"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-quicksettings-title-7" {
+            text = "Quick Settings"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-quicksettings-wifi-state-7" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "wifi.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-wifi-toggle-7" {
+            label = "Toggle Wi-Fi"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} wifi toggle"
+        }
+
+        Button "onyrion-quicksettings-wifi-networks-7" {
+            label = "Wi-Fi networks"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 7 --toggle onyrion-wifi-networks"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-bluetooth-state-7" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "bluetooth.display", raw)
+            })
+        }
+
+        Button "onyrion-quicksettings-bluetooth-toggle-7" {
+            label = "Toggle Bluetooth"
+            onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} bluetooth toggle"
+        }
+
+        Button "onyrion-quicksettings-bluetooth-devices-7" {
+            label = "Bluetooth devices"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 7 --toggle onyrion-bluetooth-devices"
+            class = "onyrion-shell-control"
+        }
+
+        Label "onyrion-quicksettings-audio-sink-7" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "sink.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-sink-down-7" {
+                label = "Vol -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change -0.05"
+            }
+
+            Button "onyrion-audio-sink-mute-7" {
+                label = "Mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink mute toggle"
+            }
+
+            Button "onyrion-audio-sink-up-7" {
+                label = "Vol +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio sink volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-audio-source-7" {
+            text = global("onyrion_audio").mutate(|raw| {
+                return onyrion_scalar_project("audio", "source.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-audio-actions"
+
+            Button "onyrion-audio-source-down-7" {
+                label = "Mic -"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change -0.05"
+            }
+
+            Button "onyrion-audio-source-mute-7" {
+                label = "Mic mute"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source mute toggle"
+            }
+
+            Button "onyrion-audio-source-up-7" {
+                label = "Mic +"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} audio source volume change 0.05"
+            }
+        }
+
+        Label "onyrion-quicksettings-battery-7" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "battery.display", raw)
+            })
+        }
+
+        Label "onyrion-quicksettings-power-state-7" {
+            text = global("onyrion_control").mutate(|raw| {
+                return onyrion_scalar_project("control", "power_profile.display", raw)
+            })
+        }
+
+        Box {
+            spacing = 8
+            class = "onyrion-quicksettings-profiles"
+
+            Button "onyrion-profile-power-saver-7" {
+                label = "Saver"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set power-saver"
+            }
+
+            Button "onyrion-profile-balanced-7" {
+                label = "Balanced"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set balanced"
+            }
+
+            Button "onyrion-profile-performance-7" {
+                label = "Performance"
+                onclick = "${ONYRION_CONTROL_BIN:-onyrion-control} power-profile set performance"
+            }
+        }
+
+        Button "onyrion-quicksettings-audio-mixer-7" {
+            label = "Audio mixer"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} open --screen 7 --toggle onyrion-audio-mixer"
+            class = "onyrion-shell-control"
+        }
+
+        Button "onyrion-quicksettings-close-7" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-quicksettings-7"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-powermenu" {
+    monitor = 0
+    stacking = "overlay"
+    focusable = "exclusive"
+
+    geometry = {
+        width = "320px"
+        height = "280px"
+        anchor = "center"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 8
+        class = "onyrion-powermenu"
+
+        Label {
+            text = "Session"
+        }
+
+        Button "onyrion-power-lock" {
+            label = "Lock"
+            onclick = "onyrion-shell lock"
+        }
+
+        Button "onyrion-power-logout" {
+            label = "Logout"
+            onclick = "onyrion-shell power logout"
+        }
+
+        Button "onyrion-power-suspend" {
+            label = "Suspend"
+            onclick = "onyrion-shell power suspend"
+        }
+
+        Button "onyrion-power-reboot" {
+            label = "Reboot"
+            onclick = "onyrion-shell power reboot"
+        }
+
+        Button "onyrion-power-poweroff" {
+            label = "Power off"
+            onclick = "onyrion-shell power poweroff"
+        }
+    }
+}
+
+Window "onyrion-audio-mixer" {
+    monitor = 0
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-audio-mixer"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "440px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 0
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-audio-mixer-title" {
+            text = "Audio mixer"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-audio-devices-ingest-anchor" {
+            text = ""
+            class = global("onyrion_audio_devices").mutate(|raw| {
+                return onyrion_audio_devices_ingest(raw)
+            })
+        }
+
+        Label "onyrion-audio-streams-ingest-anchor" {
+            text = ""
+            class = global("onyrion_audio_streams").mutate(|raw| {
+                return onyrion_audio_streams_ingest(raw)
+            })
+        }
+
+        Custom {
+            name = "onyrion-audio-dynamic"
+        }
+
+        Button "onyrion-audio-mixer-close" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-audio-mixer"
+            class = "onyrion-quicksettings-close onyrion-audio-mixer-spaced"
+        }
+    }
+}
+
+Window "onyrion-wifi-networks" {
+    monitor = 0
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-wifi-networks"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "520px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 0
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-wifi-networks-title" {
+            text = "Wi-Fi networks"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-wifi-networks-ingest-anchor" {
+            text = ""
+            class = global("onyrion_wifi_networks").mutate(|raw| {
+                return onyrion_wifi_networks_ingest(raw)
+            })
+        }
+
+        Custom {
+            name = "onyrion-wifi-dynamic"
+        }
+
+        Button "onyrion-wifi-networks-close" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-wifi-networks"
+            class = "onyrion-quicksettings-close onyrion-wifi-spaced"
+        }
+    }
+}
+
+Window "onyrion-bluetooth-devices" {
+    monitor = 0
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-bluetooth-devices"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "520px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 0
+        class = "onyrion-quicksettings"
+
+        Label "onyrion-bluetooth-devices-title" {
+            text = "Bluetooth devices"
+            class = "onyrion-quicksettings-title"
+        }
+
+        Label "onyrion-bluetooth-devices-ingest-anchor" {
+            text = ""
+            class = global("onyrion_control").mutate(|raw| {
+                return onyrion_bluetooth_ingest(raw)
+            })
+        }
+
+        Custom {
+            name = "onyrion-bluetooth-dynamic"
+        }
+
+        Button "onyrion-bluetooth-devices-close" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-bluetooth-devices"
+            class = "onyrion-quicksettings-close onyrion-wifi-spaced"
+        }
+    }
+}
+
+Window "onyrion-calendar-0" {
+    monitor = 0
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-calendar-0"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-calendar"
+
+        Label "onyrion-calendar-title-0" {
+            text = "Calendar"
+            class = "onyrion-calendar-title"
+        }
+
+        Calendar "onyrion-calendar-grid-0" {
+            show_day_names = true
+            show_heading = true
+            show_week_numbers = false
+        }
+
+        Button "onyrion-calendar-close-0" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-calendar-0"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-calendar-1" {
+    monitor = 1
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-calendar-1"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-calendar"
+
+        Label "onyrion-calendar-title-1" {
+            text = "Calendar"
+            class = "onyrion-calendar-title"
+        }
+
+        Calendar "onyrion-calendar-grid-1" {
+            show_day_names = true
+            show_heading = true
+            show_week_numbers = false
+        }
+
+        Button "onyrion-calendar-close-1" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-calendar-1"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-calendar-2" {
+    monitor = 2
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-calendar-2"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-calendar"
+
+        Label "onyrion-calendar-title-2" {
+            text = "Calendar"
+            class = "onyrion-calendar-title"
+        }
+
+        Calendar "onyrion-calendar-grid-2" {
+            show_day_names = true
+            show_heading = true
+            show_week_numbers = false
+        }
+
+        Button "onyrion-calendar-close-2" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-calendar-2"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-calendar-3" {
+    monitor = 3
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-calendar-3"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-calendar"
+
+        Label "onyrion-calendar-title-3" {
+            text = "Calendar"
+            class = "onyrion-calendar-title"
+        }
+
+        Calendar "onyrion-calendar-grid-3" {
+            show_day_names = true
+            show_heading = true
+            show_week_numbers = false
+        }
+
+        Button "onyrion-calendar-close-3" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-calendar-3"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-calendar-4" {
+    monitor = 4
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-calendar-4"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-calendar"
+
+        Label "onyrion-calendar-title-4" {
+            text = "Calendar"
+            class = "onyrion-calendar-title"
+        }
+
+        Calendar "onyrion-calendar-grid-4" {
+            show_day_names = true
+            show_heading = true
+            show_week_numbers = false
+        }
+
+        Button "onyrion-calendar-close-4" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-calendar-4"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-calendar-5" {
+    monitor = 5
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-calendar-5"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-calendar"
+
+        Label "onyrion-calendar-title-5" {
+            text = "Calendar"
+            class = "onyrion-calendar-title"
+        }
+
+        Calendar "onyrion-calendar-grid-5" {
+            show_day_names = true
+            show_heading = true
+            show_week_numbers = false
+        }
+
+        Button "onyrion-calendar-close-5" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-calendar-5"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-calendar-6" {
+    monitor = 6
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-calendar-6"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-calendar"
+
+        Label "onyrion-calendar-title-6" {
+            text = "Calendar"
+            class = "onyrion-calendar-title"
+        }
+
+        Calendar "onyrion-calendar-grid-6" {
+            show_day_names = true
+            show_heading = true
+            show_week_numbers = false
+        }
+
+        Button "onyrion-calendar-close-6" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-calendar-6"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}
+
+Window "onyrion-calendar-7" {
+    monitor = 7
+    stacking = "overlay"
+    exclusive = false
+    focusable = "none"
+    namespace = "onyrion-calendar-7"
+
+    geometry = {
+        x = "12px"
+        y = "52px"
+        width = "360px"
+        height = "10px"
+        anchor = "top right"
+    }
+
+    Box {
+        orientation = "v"
+        spacing = 10
+        class = "onyrion-calendar"
+
+        Label "onyrion-calendar-title-7" {
+            text = "Calendar"
+            class = "onyrion-calendar-title"
+        }
+
+        Calendar "onyrion-calendar-grid-7" {
+            show_day_names = true
+            show_heading = true
+            show_week_numbers = false
+        }
+
+        Button "onyrion-calendar-close-7" {
+            label = "Close"
+            onclick = "ewwii --config ${ONYRION_UI_DIR:-/usr/share/onyrion/ui/ewwii} close onyrion-calendar-7"
+            class = "onyrion-quicksettings-close"
+        }
+    }
+}

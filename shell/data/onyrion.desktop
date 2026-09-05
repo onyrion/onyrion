@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Onyrion
+Comment=Onyrion Wayland Session
+Exec=/usr/libexec/onyrion/onyrion-session
+TryExec=/usr/libexec/onyrion/onyrion-session
+Type=Application
+DesktopNames=Onyrion

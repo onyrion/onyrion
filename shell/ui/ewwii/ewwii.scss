@@ -1,0 +1,260 @@
+window {
+    background-color: rgba(18, 18, 20, 0.96);
+}
+
+.onyrion-background,
+.onyrion-wallpaper {
+    margin: 0;
+    padding: 0;
+    background-color: #121214;
+}
+
+label {
+    color: #f2f2f3;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.onyrion-bar {
+    min-height: 40px;
+    padding: 0 8px;
+}
+
+.onyrion-bar-left,
+.onyrion-bar-right {
+    min-height: 40px;
+}
+
+.onyrion-brand {
+    padding: 0 4px;
+}
+
+.onyrion-workspaces {
+    margin-left: 2px;
+}
+
+.onyrion-workspace {
+    min-width: 24px;
+    min-height: 28px;
+    padding: 0 6px;
+    border-radius: 6px;
+}
+
+.onyrion-tabs {
+    min-width: 0;
+    margin-left: 4px;
+    margin-right: 4px;
+}
+
+.onyrion-tab {
+    min-width: 0;
+    min-height: 28px;
+    padding: 0 6px;
+    border-radius: 6px;
+}
+
+.onyrion-bar-right label {
+    padding: 0 5px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.onyrion-shell-control {
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: 6px;
+}
+
+.onyrion-notifications {
+    padding: 10px;
+    background-color: transparent;
+}
+
+.onyrion-notification {
+    min-width: 380px;
+    padding: 12px;
+    border-radius: 10px;
+    background-color: rgba(30, 30, 34, 0.98);
+}
+
+.onyrion-notification-header {
+    min-height: 28px;
+}
+
+.onyrion-notification-app {
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(242, 242, 243, 0.72);
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.onyrion-notification-summary {
+    font-size: 14px;
+    font-weight: 700;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.onyrion-notification-body {
+    font-size: 13px;
+    font-weight: 400;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.onyrion-notification-dismiss {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-radius: 14px;
+}
+
+.onyrion-notification-actions {
+    margin-top: 4px;
+}
+
+.onyrion-notification-action {
+    min-height: 30px;
+    padding: 0 10px;
+    border-radius: 6px;
+}
+
+.onyrion-powermenu {
+    padding: 18px;
+}
+
+.onyrion-powermenu button {
+    min-height: 36px;
+}
+
+/* E3 beta desktop visual baseline: restrained shell chrome, no blur/animation. */
+.onyrion-bar {
+    background-color: rgba(18, 18, 20, 0.90);
+    border-bottom: 1px solid rgba(242, 242, 243, 0.08);
+}
+
+.onyrion-brand {
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+.onyrion-workspace,
+.onyrion-tab,
+.onyrion-shell-control {
+    background-color: rgba(242, 242, 243, 0.07);
+    color: rgba(242, 242, 243, 0.92);
+}
+
+.onyrion-workspace:hover,
+.onyrion-tab:hover,
+.onyrion-shell-control:hover {
+    background-color: rgba(242, 242, 243, 0.14);
+}
+
+.onyrion-launcher-control {
+    font-weight: 700;
+}
+
+.onyrion-quicksettings {
+    min-width: 320px;
+    padding: 16px;
+    border-radius: 12px;
+    background-color: rgba(30, 30, 34, 0.98);
+}
+
+.onyrion-quicksettings-title {
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.onyrion-quicksettings button {
+    min-height: 34px;
+    padding: 0 10px;
+    border-radius: 7px;
+}
+
+.onyrion-quicksettings-profiles button {
+    min-width: 86px;
+}
+
+.onyrion-quicksettings-close {
+    margin-top: 4px;
+}
+
+.onyrion-quicksettings-control {
+    min-width: 30px;
+}
+
+/* F4: Ewwii derived GlobalVar bool properties start as empty strings on the pinned
+ * runtime. Keep slot presence reactive through string classes instead. */
+.onyrion-audio-mixer-spaced {
+    margin-top: 10px;
+}
+
+.onyrion-quicksettings .onyrion-audio-slot-hidden,
+.onyrion-quicksettings .onyrion-audio-slot-hidden * {
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    border-width: 0;
+    font-size: 0;
+    opacity: 0;
+}
+
+/* F5: fixed Wi-Fi presentation slots stay reactive through string classes.
+ * Unsaved secured APs remain non-actionable until a secret-entry UX exists. */
+.onyrion-wifi-spaced {
+    margin-top: 10px;
+}
+
+.onyrion-quicksettings .onyrion-wifi-slot-hidden,
+.onyrion-quicksettings .onyrion-wifi-slot-hidden * {
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    border-width: 0;
+    font-size: 0;
+    opacity: 0;
+}
+
+.onyrion-clock-button {
+  padding: 0 6px;
+  min-height: 0;
+}
+
+.onyrion-calendar {
+  padding: 14px;
+  border-radius: 14px;
+}
+
+.onyrion-calendar-title {
+  font-weight: 700;
+}
+
+.onyrion-calendar calendar {
+  padding: 6px;
+}
+
+.onyrion-tray-slot-live {
+  padding: 0 2px;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+.onyrion-tray-slot-hidden {
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  min-height: 0;
+  font-size: 0;
+  opacity: 0;
+}
+
+.onyrion-tray-slot-hidden image {
+  min-width: 0;
+  min-height: 0;
+  opacity: 0;
+}

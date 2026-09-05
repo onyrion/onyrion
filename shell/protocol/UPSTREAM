@@ -1,0 +1,5 @@
+core_commit=3e17728688037948b9f1ce3b08721d69cc6b1dcf
+sha256=7c3f069f6b457a78225b4afcd6cb4ff3fe3469386e2b575fc90694b391655adb
+source=onyrion-core/protocol/onyrion-shell-unstable-v1.xml
+interface=onyrion_shell_unstable_v1
+version=11

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: arch
+
+    steps:
+      - name: Install build deps
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            git \
+            base-devel \
+            meson \
+            ninja \
+            pkgconf \
+            cmake \
+            wayland \
+            wayland-protocols \
+            wlroots0.20
+
+      - name: Checkout
+        run: |
+          git clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" .
+          git checkout "$GITHUB_SHA"
+
+      - name: Configure
+        run: meson setup build
+
+      - name: Build
+        run: meson compile -C build

@@ -1,0 +1,21 @@
+version 1
+
+provider "healthy-command" type="command" {
+    priority 100
+    autostart #true
+    required #false
+    exec "sleep" "30"
+    restart policy="never" delay-ms=200 max-delay-ms=1000
+
+    health type="command" interval-ms=200 timeout-ms=500 startup-timeout-ms=2000 {
+        exec "true"
+    }
+
+    capability "ui:test" {
+        action "open" {
+            exec "true"
+        }
+    }
+}
+
+fallback enabled=#false

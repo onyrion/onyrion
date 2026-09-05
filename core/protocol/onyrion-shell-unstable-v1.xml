@@ -1,0 +1,594 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="onyrion_shell_unstable_v1">
+  <copyright>
+    Copyright 2026 Onyrion contributors
+
+    Permission to use, copy, modify, distribute, and sell this
+    software and its documentation for any purpose is hereby granted
+    without fee, provided that the above copyright notice appear in
+    all copies and that both that copyright notice and this permission
+    notice appear in supporting documentation.
+  </copyright>
+
+  <interface name="onyrion_shell_unstable_v1" version="11">
+    <description summary="experimental Onyrion shell control protocol">
+      Experimental development protocol between Onyrion core and shell
+      clients.
+
+      The compositor is the authoritative source of state. Clients must
+      be able to reconstruct their state from a fresh snapshot after
+      reconnecting.
+
+      This interface is unstable and may change incompatibly.
+    </description>
+
+    <enum name="action">
+      <entry
+        name="workspace_next"
+        value="1"
+        summary="switch to or create the next workspace"
+      />
+      <entry
+        name="workspace_previous"
+        value="2"
+        summary="switch to the previous workspace"
+      />
+      <entry
+        name="split_active"
+        value="3"
+        summary="split the active window into a new tile"
+      />
+      <entry
+        name="focus_direction"
+        value="4"
+        summary="focus a tile in a direction"
+      />
+      <entry
+        name="move_direction"
+        value="5"
+        summary="move the active group in a direction"
+      />
+      <entry
+        name="resize_direction"
+        value="6"
+        summary="move a relevant split divider in a direction"
+      />
+      <entry
+        name="flip_active_split"
+        value="7"
+        summary="flip the active tile parent split orientation"
+      />
+      <entry
+        name="toggle_fullscreen_active"
+        value="8"
+        summary="toggle fullscreen for the active window"
+      />
+      <entry
+        name="close_active"
+        value="9"
+        summary="request close for the active window"
+      />
+      <entry
+        name="workspace_activate"
+        value="10"
+        since="3"
+        summary="activate a workspace by stable id"
+      />
+      <entry
+        name="group_focus"
+        value="11"
+        since="3"
+        summary="focus a group by stable id"
+      />
+      <entry
+        name="window_focus"
+        value="12"
+        since="3"
+        summary="focus a window by stable id"
+      />
+      <entry
+        name="window_next"
+        value="13"
+        since="3"
+        summary="focus the next window in the active group"
+      />
+      <entry
+        name="window_previous"
+        value="14"
+        since="3"
+        summary="focus the previous window in the active group"
+      />
+      <entry
+        name="session_exit"
+        value="15"
+        since="5"
+        summary="cleanly terminate the compositor session"
+      />
+      <entry
+        name="group_merge"
+        value="16"
+        since="8"
+        summary="merge all windows from one group into another"
+      />
+      <entry
+        name="window_move_to_group"
+        value="17"
+        since="8"
+        summary="move one window to another group"
+      />
+      <entry
+        name="window_split"
+        value="18"
+        since="8"
+        summary="split one window from its current group"
+      />
+      <entry
+        name="window_range_move"
+        value="19"
+        since="8"
+        summary="move one contiguous window range to another group"
+      />
+      <entry
+        name="group_move_to_workspace"
+        value="20"
+        since="8"
+        summary="move one group to another workspace"
+      />
+      <entry
+        name="window_move_to_workspace"
+        value="21"
+        since="8"
+        summary="move one window to another workspace"
+      />
+      <entry
+        name="group_split_at"
+        value="22"
+        since="10"
+        summary="split a group before a stable window id"
+      />
+      <entry
+        name="window_float"
+        value="23"
+        since="11"
+        summary="detach a tiled window into direct floating placement"
+      />
+      <entry
+        name="window_tile"
+        value="24"
+        since="11"
+        summary="return a floating window to tiled group placement"
+      />
+    </enum>
+
+    <enum name="direction">
+      <entry name="left" value="0"/>
+      <entry name="right" value="1"/>
+      <entry name="up" value="2"/>
+      <entry name="down" value="3"/>
+    </enum>
+
+    <enum name="split_orientation">
+      <entry name="horizontal" value="0"/>
+      <entry name="vertical" value="1"/>
+    </enum>
+
+    <enum name="window_placement">
+      <entry name="tiled" value="0"/>
+      <entry name="transient" value="1"/>
+      <entry name="floating" value="2"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the shell protocol object"/>
+    </request>
+
+    <request name="get_state">
+      <description summary="request a complete current state snapshot">
+        The compositor replies with state_begin, zero or more workspace
+        events, then, for version 2 clients, zero or more group and window
+        events, followed by state_end.
+
+        The generation in state_begin and state_end identifies the
+        snapshot.
+      </description>
+    </request>
+
+    <request name="workspace_next">
+      <description summary="activate the next workspace"/>
+    </request>
+
+    <request name="workspace_previous">
+      <description summary="activate the previous workspace"/>
+    </request>
+
+    <request name="split_active">
+      <description summary="split the active window into a new tile"/>
+      <arg
+        name="orientation"
+        type="uint"
+        enum="split_orientation"
+        summary="orientation of the new split"
+      />
+    </request>
+
+    <request name="focus_direction">
+      <description summary="focus a tile in a direction"/>
+      <arg name="direction" type="uint" enum="direction"/>
+    </request>
+
+    <request name="move_direction">
+      <description summary="move the active group in a direction"/>
+      <arg name="direction" type="uint" enum="direction"/>
+    </request>
+
+    <request name="resize_direction">
+      <description summary="resize a split in a direction"/>
+      <arg name="direction" type="uint" enum="direction"/>
+    </request>
+
+    <request name="flip_active_split">
+      <description summary="flip the active tile parent split orientation"/>
+    </request>
+
+    <request name="toggle_fullscreen_active">
+      <description summary="toggle fullscreen for the active window"/>
+    </request>
+
+    <request name="close_active">
+      <description summary="request close for the active window"/>
+    </request>
+
+    <event name="state_begin">
+      <description summary="begin a complete state snapshot"/>
+      <arg
+        name="generation"
+        type="uint"
+        summary="current shell-state generation"
+      />
+      <arg
+        name="workspace_count"
+        type="uint"
+        summary="number of workspaces in this snapshot"
+      />
+    </event>
+
+    <event name="workspace">
+      <description summary="describe one workspace in the snapshot"/>
+      <arg
+        name="id"
+        type="string"
+        summary="workspace identifier"
+      />
+      <arg
+        name="active"
+        type="uint"
+        summary="1 if this is the active workspace, otherwise 0"
+      />
+      <arg
+        name="group_count"
+        type="uint"
+        summary="number of groups in this workspace"
+      />
+      <arg
+        name="tile_count"
+        type="uint"
+        summary="number of tiles in this workspace"
+      />
+      <arg
+        name="window_count"
+        type="uint"
+        summary="total number of windows in this workspace"
+      />
+    </event>
+
+
+
+    <event name="state_end">
+      <description summary="complete a state snapshot"/>
+      <arg
+        name="generation"
+        type="uint"
+        summary="generation matching state_begin"
+      />
+    </event>
+
+    <event name="changed">
+      <description summary="authoritative core state has changed">
+        Clients should request a new complete snapshot. Multiple changes
+        may be coalesced by comparing generation values.
+      </description>
+      <arg
+        name="generation"
+        type="uint"
+        summary="new shell-state generation"
+      />
+    </event>
+
+    <event name="action_result">
+      <description summary="report whether a requested action succeeded"/>
+      <arg
+        name="action"
+        type="uint"
+        enum="action"
+        summary="action that completed"
+      />
+      <arg
+        name="success"
+        type="uint"
+        summary="1 on success, otherwise 0"
+      />
+    </event>
+
+    <event name="group" since="2">
+      <description summary="describe one group in the snapshot">
+        Group and workspace identifiers are stable for the lifetime of
+        their corresponding compositor objects.
+      </description>
+      <arg name="id" type="string" summary="group identifier"/>
+      <arg
+        name="workspace_id"
+        type="string"
+        summary="workspace containing this group"
+      />
+      <arg
+        name="active"
+        type="uint"
+        summary="1 if this is the workspace active group, otherwise 0"
+      />
+      <arg
+        name="window_count"
+        type="uint"
+        summary="number of windows in this group"
+      />
+    </event>
+
+    <event name="window" since="2">
+      <description summary="describe one window in the snapshot">
+        Window and group identifiers are stable for the lifetime of their
+        corresponding compositor objects.
+      </description>
+      <arg name="id" type="string" summary="window identifier"/>
+      <arg name="group_id" type="string" summary="containing group"/>
+      <arg
+        name="active"
+        type="uint"
+        summary="1 if this is the active window in its group, otherwise 0"
+      />
+      <arg
+        name="fullscreen"
+        type="uint"
+        summary="1 if this window is fullscreen, otherwise 0"
+      />
+      <arg name="app_id" type="string" summary="current xdg app_id"/>
+      <arg name="title" type="string" summary="current xdg title"/>
+    </event>
+
+    <request name="activate_workspace" since="3">
+      <description summary="activate a workspace by stable id"/>
+      <arg name="id" type="string" summary="workspace identifier"/>
+    </request>
+
+    <request name="focus_group" since="3">
+      <description summary="focus a group by stable id">
+        If the group belongs to another workspace, that workspace is
+        activated first.
+      </description>
+      <arg name="id" type="string" summary="group identifier"/>
+    </request>
+
+    <request name="focus_window" since="3">
+      <description summary="focus a window by stable id">
+        If the window belongs to another workspace, that workspace is
+        activated first.
+      </description>
+      <arg name="id" type="string" summary="window identifier"/>
+    </request>
+
+    <request name="window_next" since="3">
+      <description summary="focus the next mapped window in the active group"/>
+    </request>
+
+    <request name="window_previous" since="3">
+      <description summary="focus the previous mapped window in the active group"/>
+    </request>
+
+    <request name="claim_controller" since="4">
+      <description summary="claim canonical Shell controller role">
+        Exactly one protocol resource may own the controller role at a time.
+        The compositor replies with controller_claim_result.
+      </description>
+    </request>
+
+    <request name="release_controller" since="4">
+      <description summary="release canonical Shell controller role"/>
+    </request>
+
+    <request name="controller_result" since="4">
+      <description summary="complete a compositor-originated Shell invocation"/>
+      <arg name="serial" type="uint" summary="serial from controller_invoke"/>
+      <arg
+        name="success"
+        type="uint"
+        summary="1 if Shell completed the invocation, otherwise 0"
+      />
+    </request>
+
+    <event name="controller_claim_result" since="4">
+      <description summary="report controller claim result"/>
+      <arg
+        name="success"
+        type="uint"
+        summary="1 if this resource owns the controller role, otherwise 0"
+      />
+    </event>
+
+    <event name="controller_invoke" since="4">
+      <description summary="invoke one opaque Shell capability action">
+        This event is sent only to the canonical controller resource.
+        Capability and action are opaque identifiers to Core.
+      </description>
+      <arg name="serial" type="uint" summary="invocation serial"/>
+      <arg name="capability" type="string" summary="opaque capability identifier"/>
+      <arg name="action" type="string" summary="opaque action identifier"/>
+    </event>
+
+
+    <request name="session_exit" since="5">
+      <description summary="cleanly terminate the compositor session"/>
+    </request>
+    <event name="output" since="6">
+      <description summary="describe one compositor output in the snapshot"/>
+      <arg name="name" type="string" summary="stable output name"/>
+      <arg
+        name="focused"
+        type="uint"
+        summary="1 if implicit workspace actions target this output"
+      />
+      <arg
+        name="visible_workspace_id"
+        type="string"
+        summary="global id of the workspace currently visible on this output"
+      />
+      <arg
+        name="assigned_workspace_count"
+        type="uint"
+        summary="number of workspaces currently assigned to this output"
+      />
+    </event>
+
+    <event name="workspace_output" since="6">
+      <description summary="describe workspace to output ownership">
+        An empty output_name means the workspace is currently unavailable.
+      </description>
+      <arg name="workspace_id" type="string" summary="global workspace id"/>
+      <arg name="output_name" type="string" summary="assigned output name or empty"/>
+      <arg
+        name="visible"
+        type="uint"
+        summary="1 if this workspace is currently visible on its output"
+      />
+    </event>
+
+    <event name="workspace_metadata" since="7">
+      <description summary="describe configured workspace metadata"/>
+      <arg name="workspace_id" type="string" summary="global workspace id"/>
+      <arg name="name" type="string" summary="human workspace name"/>
+      <arg name="icon" type="string" summary="workspace icon identifier"/>
+      <arg
+        name="persistent"
+        type="uint"
+        summary="1 if the workspace is configured persistent"
+      />
+      <arg
+        name="startup"
+        type="uint"
+        summary="1 if this workspace is the startup workspace for its affinity"
+      />
+      <arg
+        name="output_affinity"
+        type="string"
+        summary="configured output name or empty when unpinned"
+      />
+    </event>
+
+
+    <request name="merge_group" since="8">
+      <description summary="merge a source group into a target group">
+        Both groups must currently belong to the same workspace.
+        The target group identity is preserved.
+      </description>
+      <arg name="source_group_id" type="string"/>
+      <arg name="target_group_id" type="string"/>
+    </request>
+
+    <request name="move_window_to_group" since="8">
+      <description summary="move one window to another group">
+        Source and target groups must currently belong to the same workspace.
+      </description>
+      <arg name="window_id" type="string"/>
+      <arg name="target_group_id" type="string"/>
+    </request>
+
+    <request name="split_window" since="8">
+      <description summary="split one window from its group into a new tile"/>
+      <arg name="window_id" type="string"/>
+      <arg
+        name="orientation"
+        type="uint"
+        enum="split_orientation"
+      />
+    </request>
+
+    <request name="move_window_range" since="8">
+      <description summary="move a contiguous ordered window range">
+        first_window_id must precede last_window_id in the same source group.
+        The target group must be in that workspace.
+      </description>
+      <arg name="first_window_id" type="string"/>
+      <arg name="last_window_id" type="string"/>
+      <arg name="target_group_id" type="string"/>
+    </request>
+
+    <request name="move_group_to_workspace" since="8">
+      <description summary="move a stable group to an available workspace"/>
+      <arg name="group_id" type="string"/>
+      <arg name="workspace_id" type="string"/>
+    </request>
+
+    <request name="move_window_to_workspace" since="8">
+      <description summary="move one window to an available workspace">
+        The window joins that workspace active group, creating one when needed.
+      </description>
+      <arg name="window_id" type="string"/>
+      <arg name="workspace_id" type="string"/>
+    </request>
+
+    <event name="window_placement" since="9">
+      <description summary="authoritative window placement relation">
+        Publishes a managed window's direct workspace ownership, placement
+        role, and optional parent window relation. A transient window is not
+        an ordinary Group tab and therefore has an empty group_id in the
+        legacy window event.
+      </description>
+      <arg name="window_id" type="string"/>
+      <arg name="workspace_id" type="string"/>
+      <arg
+        name="placement"
+        type="uint"
+        enum="window_placement"
+      />
+      <arg name="parent_window_id" type="string"/>
+    </event>
+
+    <request name="split_group_at" since="10">
+      <description summary="split a group at an ordered window boundary">
+        The window identifies both the source group and the first window of
+        the new suffix group. The prefix must remain non-empty. The new Group
+        is inserted adjacent to the source tile with the requested split
+        orientation.
+      </description>
+      <arg name="window_id" type="string"/>
+      <arg
+        name="orientation"
+        type="uint"
+        enum="split_orientation"
+      />
+    </request>
+
+    <request name="float_window" since="11">
+      <description summary="detach a tiled window into floating placement">
+        The window remains directly owned by its workspace, leaves its Group,
+        and receives deterministic centered floating geometry.
+      </description>
+      <arg name="window_id" type="string"/>
+    </request>
+
+    <request name="tile_window" since="11">
+      <description summary="return a floating window to tiled placement">
+        The window joins the workspace active Group, creating one when needed.
+      </description>
+      <arg name="window_id" type="string"/>
+    </request>
+
+  </interface>
+</protocol>

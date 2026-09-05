@@ -1,0 +1,139 @@
+version 1
+
+appearance {
+    wallpaper "auto"
+}
+
+provider "ewwii-main" type="ewwii" {
+    priority 100
+    autostart #true
+    required #false
+    exec "/usr/share/onyrion/ui/ewwii/start-ewwii.sh"
+    restart policy="on-failure" delay-ms=1000 max-delay-ms=30000
+    health type="process"
+
+    capability "ui:bar" {
+        action "open" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "open" "onyrion-bar"
+        }
+        action "close" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "close" "onyrion-bar"
+        }
+        action "toggle" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "open" "onyrion-bar" "--toggle"
+        }
+    }
+
+    capability "ui:clipboard" {
+        action "open" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "open" "onyrion-clipboard"
+        }
+    }
+
+    capability "ui:powermenu" {
+        action "open" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "open" "onyrion-powermenu"
+        }
+        action "close" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "close" "onyrion-powermenu"
+        }
+        action "toggle" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "open" "onyrion-powermenu" "--toggle"
+        }
+    }
+
+    capability "app:terminal" {
+        action "open" {
+            exec "onyrion-shell" "terminal"
+        }
+    }
+
+    capability "ui:quicksettings" {
+        action "open" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "open" "onyrion-quicksettings-0"
+        }
+        action "close" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "close" "onyrion-quicksettings-0"
+        }
+        action "toggle" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "open" "onyrion-quicksettings-0" "--toggle"
+        }
+    }
+
+    capability "ui:osd" {
+        action "open" {
+            exec "ewwii" "--config" "/usr/share/onyrion/ui/ewwii" "open" "onyrion-osd"
+        }
+    }
+}
+
+provider "launcher-native" type="command" {
+    priority 200
+    autostart #true
+    required #false
+    exec "/usr/libexec/onyrion/onyrion-launcher" "daemon"
+    restart policy="on-failure" delay-ms=500 max-delay-ms=5000
+
+    health type="command" interval-ms=500 timeout-ms=1000 startup-timeout-ms=5000 {
+        exec "/usr/libexec/onyrion/onyrion-launcher" "ping"
+    }
+
+    capability "ui:launcher" {
+        action "open" {
+            exec "/usr/libexec/onyrion/onyrion-launcher" "open"
+        }
+        action "close" {
+            exec "/usr/libexec/onyrion/onyrion-launcher" "close"
+        }
+        action "toggle" {
+            exec "/usr/libexec/onyrion/onyrion-launcher" "toggle"
+        }
+    }
+}
+
+provider "control-native" type="command" {
+    priority 300
+    autostart #true
+    required #false
+    exec "onyrion-control" "watch"
+    restart policy="on-failure" delay-ms=500 max-delay-ms=5000
+    health type="process"
+
+    capability "system:audio-output" {
+        action "volume-up" {
+            exec "onyrion-control" "audio" "sink" "volume" "change" "0.02"
+        }
+        action "volume-down" {
+            exec "onyrion-control" "audio" "sink" "volume" "change" "-0.02"
+        }
+        action "mute-toggle" {
+            exec "onyrion-control" "audio" "sink" "mute" "toggle"
+        }
+    }
+
+    capability "system:audio-input" {
+        action "mute-toggle" {
+            exec "onyrion-control" "audio" "source" "mute" "toggle"
+        }
+    }
+}
+
+provider "tray-host" type="command" {
+    priority 100
+    autostart #false
+    required #false
+    exec "onyrion-shell" "tray" "watch"
+    restart policy="never"
+    health type="process"
+
+    capability "ui:tray" {
+        action "open" {
+            exec "onyrion-shell" "tray" "state"
+        }
+    }
+}
+
+fallback enabled=#true {
+    title "Desktop UI unavailable"
+    show-when-missing "ui:launcher" "ui:bar"
+}

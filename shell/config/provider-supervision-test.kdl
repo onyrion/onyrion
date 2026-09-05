@@ -1,0 +1,33 @@
+version 1
+
+provider "stable" type="command" {
+    priority 100
+    autostart #true
+    required #false
+    exec "sleep" "30"
+    restart policy="never" delay-ms=200 max-delay-ms=1000
+    health type="process"
+
+    capability "ui:test" {
+        action "open" {
+            exec "true"
+        }
+    }
+}
+
+provider "crash" type="command" {
+    priority 200
+    autostart #true
+    required #false
+    exec "sh" "-c" "exit 1"
+    restart policy="on-failure" delay-ms=200 max-delay-ms=1000
+    health type="process"
+
+    capability "ui:test" {
+        action "open" {
+            exec "true"
+        }
+    }
+}
+
+fallback enabled=#false

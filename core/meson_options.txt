@@ -1,0 +1,6 @@
+option(
+  'test_shell',
+  type: 'boolean',
+  value: false,
+  description: 'Build the experimental Onyrion shell protocol test client',
+)

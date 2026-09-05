@@ -1,0 +1,14 @@
+[package]
+name = "onyrion-ewwii-plugin"
+version = "0.2.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ewwii_plugin_api = { git = "https://github.com/Ewwii-sh/ewwii.git", rev = "ed6f0776e2f93114becbce2c0796117fa0fdb440", features = ["widgets"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zbus = { version = "=5.19.0", features = ["blocking-api"] }

@@ -1,0 +1,25 @@
+version 1
+
+input {
+    keyboard {
+        layout "us,ru"
+        options "grp:win_space_toggle"
+        repeat-rate 35
+        repeat-delay 250
+    }
+
+    bindings {
+    }
+}
+
+layout {
+    initial-split-ratio 0.5
+    resize-step 0.05
+    resize-min 0.10
+    resize-max 0.90
+    outer-gap 0
+    inner-gap 0
+}
+
+window-rules {
+}
