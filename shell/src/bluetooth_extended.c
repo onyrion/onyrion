@@ -4,6 +4,8 @@
 #include <glib.h>
 
 #include <stdbool.h>
+#include <errno.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -299,6 +301,154 @@ static int scan_cli(
     return 0;
 }
 
+static int scan_hold_cli(GDBusConnection *bus) {
+    g_autoptr(GError) error = NULL;
+    g_autofree char *adapter = find_adapter(bus, &error);
+    if (!adapter) {
+        g_printerr(
+            "CONTROL_FAIL bluetooth scan action=hold adapter=%s\n",
+            error ? error->message : "unknown"
+        );
+        return 1;
+    }
+
+    bool powered = false;
+    if (!bool_property(
+                bus, adapter, BLUEZ_ADAPTER_IFACE, "Powered",
+                &powered, &error) || !powered) {
+        g_printerr(
+            "CONTROL_FAIL bluetooth scan action=hold adapter-not-powered%s%s\n",
+            error ? " error=" : "",
+            error ? error->message : ""
+        );
+        return 1;
+    }
+
+    g_autoptr(GVariant) started = call_sync(
+        bus, adapter, BLUEZ_ADAPTER_IFACE, "StartDiscovery",
+        NULL, G_VARIANT_TYPE("()"), 10000, &error
+    );
+    if (!started) {
+        g_printerr(
+            "CONTROL_FAIL bluetooth scan action=hold start=%s\n",
+            error ? error->message : "unknown"
+        );
+        return 1;
+    }
+
+    g_clear_error(&error);
+    if (!wait_bool(
+                bus, adapter, BLUEZ_ADAPTER_IFACE, "Discovering",
+                true, 50, &error)) {
+        g_printerr(
+            "CONTROL_FAIL bluetooth scan action=hold verify-start=%s\n",
+            error ? error->message : "unknown"
+        );
+        return 1;
+    }
+
+    g_print("CONTROL_OK bluetooth scan state=started mode=hold\n");
+    fflush(stdout);
+
+    char buffer[64];
+    for (;;) {
+        ssize_t n = read(STDIN_FILENO, buffer, sizeof(buffer));
+        if (n > 0) continue;
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        g_printerr(
+            "CONTROL_FAIL bluetooth scan action=hold stdin=%s\n",
+            g_strerror(errno)
+        );
+        break;
+    }
+
+    g_clear_error(&error);
+    g_autoptr(GVariant) stopped = call_sync(
+        bus, adapter, BLUEZ_ADAPTER_IFACE, "StopDiscovery",
+        NULL, G_VARIANT_TYPE("()"), 10000, &error
+    );
+    if (!stopped) {
+        g_clear_error(&error);
+        bool discovering = true;
+        if (!bool_property(
+                    bus, adapter, BLUEZ_ADAPTER_IFACE, "Discovering",
+                    &discovering, &error) || discovering) {
+            g_printerr(
+                "CONTROL_FAIL bluetooth scan action=hold stop=%s\n",
+                error ? error->message : "unknown"
+            );
+            return 1;
+        }
+    }
+
+    g_print("CONTROL_OK bluetooth scan state=stopped mode=hold\n");
+    fflush(stdout);
+    return 0;
+}
+
+static int scan_set_cli(
+        GDBusConnection *bus,
+        bool start) {
+    g_autoptr(GError) error = NULL;
+    g_autofree char *adapter = find_adapter(bus, &error);
+    if (!adapter) {
+        g_printerr(
+            "CONTROL_FAIL bluetooth scan action=%s adapter=%s\n",
+            start ? "start" : "stop",
+            error ? error->message : "unknown"
+        );
+        return 1;
+    }
+
+    if (start) {
+        bool powered = false;
+        if (!bool_property(
+                    bus, adapter, BLUEZ_ADAPTER_IFACE, "Powered",
+                    &powered, &error) || !powered) {
+            g_printerr(
+                "CONTROL_FAIL bluetooth scan action=start adapter-not-powered%s%s\n",
+                error ? " error=" : "",
+                error ? error->message : ""
+            );
+            return 1;
+        }
+    }
+
+    const char *method = start ? "StartDiscovery" : "StopDiscovery";
+    g_autoptr(GVariant) result = call_sync(
+        bus, adapter, BLUEZ_ADAPTER_IFACE, method,
+        NULL, G_VARIANT_TYPE("()"), 10000, &error
+    );
+    if (!result) {
+        /* BlueZ may report NotReady/Failed for redundant StopDiscovery.
+         * Treat an already-stopped discovery as idempotent success only when
+         * the Discovering property confirms false. */
+        if (!start) {
+            g_clear_error(&error);
+            bool discovering = true;
+            if (bool_property(
+                        bus, adapter, BLUEZ_ADAPTER_IFACE, "Discovering",
+                        &discovering, &error) && !discovering) {
+                g_print("CONTROL_OK bluetooth scan state=stopped already=1\n");
+                return 0;
+            }
+        }
+        g_printerr(
+            "CONTROL_FAIL bluetooth scan action=%s error=%s\n",
+            start ? "start" : "stop",
+            error ? error->message : "unknown"
+        );
+        return 1;
+    }
+
+    g_print(
+        "CONTROL_OK bluetooth scan state=%s\n",
+        start ? "started" : "stopped"
+    );
+    return 0;
+}
+
 static int device_cli(
         GDBusConnection *bus,
         const char *action,
@@ -432,13 +582,20 @@ int onyrion_bluetooth_extended_cli(
     }
 
     if (g_strcmp0(argv[2], "scan") == 0) {
+        if (argc == 4 && g_strcmp0(argv[3], "hold") == 0)
+            return scan_hold_cli(bus);
+        if (argc == 4 && g_strcmp0(argv[3], "start") == 0)
+            return scan_set_cli(bus, true);
+        if (argc == 4 && g_strcmp0(argv[3], "stop") == 0)
+            return scan_set_cli(bus, false);
+
         int seconds = 6;
         if (argc == 4) {
             char *end = NULL;
             long parsed = strtol(argv[3], &end, 10);
             if (!end || *end != '\0' || parsed < 1 || parsed > 30) {
                 g_printerr(
-                    "CONTROL_FAIL bluetooth scan invalid-seconds=%s\n",
+                    "CONTROL_FAIL bluetooth scan invalid-argument=%s\n",
                     argv[3]
                 );
                 return 2;
@@ -446,7 +603,7 @@ int onyrion_bluetooth_extended_cli(
             seconds = (int)parsed;
         } else if (argc != 3) {
             g_printerr(
-                "usage: onyrion-control bluetooth scan [SECONDS]\n"
+                "usage: onyrion-control bluetooth scan [SECONDS|hold|start|stop]\n"
             );
             return 2;
         }

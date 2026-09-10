@@ -3,6 +3,7 @@
 #include "group.h"
 #include "layout.h"
 #include "server.h"
+#include "session_lock.h"
 #include "shell_protocol.h"
 #include "window.h"
 #include "workspace.h"
@@ -66,7 +67,8 @@ static bool action_split_to_layout(
 bool onyrion_action_execute(
         struct onyrion_server *server,
         OnyrionActionRequest request) {
-    if (!server) {
+    if (!server ||
+            onyrion_session_lock_active(server)) {
         return false;
     }
 
@@ -268,6 +270,25 @@ bool onyrion_action_execute(
         return onyrion_window_tile_id(
             server,
             request.object_id
+        );
+
+    case ONYRION_ACTION_GROUP_FLOAT:
+        return onyrion_group_float_id(
+            server,
+            request.object_id
+        );
+
+    case ONYRION_ACTION_GROUP_TILE:
+        return onyrion_group_tile_id(
+            server,
+            request.object_id
+        );
+
+    case ONYRION_ACTION_GROUP_SET_PINNED:
+        return onyrion_group_set_pinned_id(
+            server,
+            request.object_state.object_id,
+            request.object_state.enabled
         );
 
     case ONYRION_ACTION_SHELL_INVOKE:

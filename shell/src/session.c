@@ -1708,6 +1708,8 @@ static bool import_activation_environment(
         "XDG_SESSION_DESKTOP",
         "WAYLAND_DISPLAY",
         "DISPLAY",
+        "XCURSOR_THEME",
+        "XCURSOR_SIZE",
         NULL,
     };
 
@@ -2582,7 +2584,11 @@ int main(
             setenv(
                 "WAYLAND_DISPLAY",
                 socket_name,
-                1) < 0) {
+                1) < 0 ||
+            (getenv("XCURSOR_THEME") == NULL &&
+                setenv("XCURSOR_THEME", "default", 1) < 0) ||
+            (getenv("XCURSOR_SIZE") == NULL &&
+                setenv("XCURSOR_SIZE", "24", 1) < 0)) {
         fprintf(
             stderr,
             "SESSION FAIL cannot establish session environment: %s\n",

@@ -504,6 +504,102 @@ static void handle_action_result(
     );
 }
 
+
+static void handle_controller_claim_result(
+        void *data,
+        struct onyrion_shell_unstable_v1 *shell,
+        uint32_t success) {
+    (void)data; (void)shell;
+    printf("CONTROLLER CLAIM success=%u\n", success);
+}
+
+static void handle_controller_invoke(
+        void *data,
+        struct onyrion_shell_unstable_v1 *shell,
+        uint32_t serial,
+        const char *capability,
+        const char *action) {
+    (void)data; (void)shell;
+    printf("CONTROLLER INVOKE serial=%u capability=%s action=%s\n",
+        serial, capability, action);
+}
+
+static void handle_output(
+        void *data,
+        struct onyrion_shell_unstable_v1 *shell,
+        const char *name,
+        uint32_t focused,
+        const char *visible_workspace_id,
+        uint32_t assigned_workspace_count) {
+    (void)data; (void)shell;
+    printf("OUTPUT name=%s focused=%u workspace=%s assigned=%u\n",
+        name, focused, visible_workspace_id, assigned_workspace_count);
+}
+
+static void handle_workspace_output(
+        void *data,
+        struct onyrion_shell_unstable_v1 *shell,
+        const char *workspace_id,
+        const char *output_name,
+        uint32_t visible) {
+    (void)data; (void)shell;
+    printf("WORKSPACE-OUTPUT workspace=%s output=%s visible=%u\n",
+        workspace_id, output_name, visible);
+}
+
+static void handle_workspace_metadata(
+        void *data,
+        struct onyrion_shell_unstable_v1 *shell,
+        const char *workspace_id,
+        const char *name,
+        const char *icon,
+        uint32_t persistent,
+        uint32_t startup,
+        const char *output_affinity) {
+    (void)data; (void)shell;
+    printf("WORKSPACE-META workspace=%s name=%s icon=%s persistent=%u startup=%u affinity=%s\n",
+        workspace_id, name, icon, persistent, startup, output_affinity);
+}
+
+static void handle_window_placement(
+        void *data,
+        struct onyrion_shell_unstable_v1 *shell,
+        const char *window_id,
+        const char *workspace_id,
+        uint32_t placement,
+        const char *parent_window_id) {
+    (void)data; (void)shell;
+    printf("WINDOW-PLACEMENT window=%s workspace=%s placement=%u parent=%s\n",
+        window_id, workspace_id, placement, parent_window_id);
+}
+
+static void handle_group_placement(
+        void *data,
+        struct onyrion_shell_unstable_v1 *shell,
+        const char *group_id,
+        uint32_t placement,
+        uint32_t pinned,
+        const char *pinned_output_name) {
+    (void)data; (void)shell;
+    printf("GROUP-PLACEMENT group=%s placement=%u pinned=%u output=%s\n",
+        group_id, placement, pinned, pinned_output_name);
+}
+
+static void handle_drag_surface_motion(
+        void *data,
+        struct onyrion_shell_unstable_v1 *shell,
+        const char *group_id,
+        const char *name_space,
+        wl_fixed_t x,
+        wl_fixed_t y) {
+    (void)data; (void)shell;
+    printf("DRAG-SURFACE group=%s namespace=%s x=%.1f y=%.1f\n",
+        group_id,
+        name_space,
+        wl_fixed_to_double(x),
+        wl_fixed_to_double(y));
+}
+
 static const struct onyrion_shell_unstable_v1_listener shell_listener = {
     .state_begin = handle_state_begin,
     .workspace = handle_workspace,
@@ -512,6 +608,14 @@ static const struct onyrion_shell_unstable_v1_listener shell_listener = {
     .state_end = handle_state_end,
     .changed = handle_changed,
     .action_result = handle_action_result,
+    .controller_claim_result = handle_controller_claim_result,
+    .controller_invoke = handle_controller_invoke,
+    .output = handle_output,
+    .workspace_output = handle_workspace_output,
+    .workspace_metadata = handle_workspace_metadata,
+    .window_placement = handle_window_placement,
+    .group_placement = handle_group_placement,
+    .drag_surface_motion = handle_drag_surface_motion,
 };
 
 static void handle_registry_global(
@@ -529,9 +633,9 @@ static void handle_registry_global(
     }
 
     const uint32_t bind_version =
-        version < 5
+        version < 14
             ? version
-            : 5;
+            : 14;
 
     state->shell =
         wl_registry_bind(

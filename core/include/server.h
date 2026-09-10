@@ -1,6 +1,7 @@
 #pragma once
 
 #include "compiler.h"
+#include "input.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -87,6 +88,7 @@ typedef struct onyrion_server {
     struct onyrion_fallback_controller *fallback;
 
     struct wl_list groups;
+    struct wl_list group_surfaces;
     struct onyrion_group *active_group;
     uint64_t next_group_id;
 
@@ -117,6 +119,12 @@ typedef struct onyrion_server {
     double chrome_drag_origin_x;
     double chrome_drag_origin_y;
     bool chrome_drag_active;
+    bool chrome_drag_shell_origin;
+    struct wl_client *chrome_drag_shell_client;
+    struct wl_resource *chrome_drag_shell_resource;
+    uint64_t chrome_drag_hint_group_id;
+    uint64_t chrome_drag_hint_reference_window_id;
+    int chrome_drag_hint_kind;
 
     bool layout_resize_pointer_grab;
     bool layout_resize_cursor_owned;
@@ -124,6 +132,8 @@ typedef struct onyrion_server {
     uint64_t layout_resize_first_group_id;
     uint64_t layout_resize_second_group_id;
     int layout_resize_orientation;
+
+    OnyrionWindowInteraction window_interaction;
 
     struct wlr_xdg_shell *xdg_shell;
     struct wlr_xdg_activation_v1 *xdg_activation;

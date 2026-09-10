@@ -500,22 +500,27 @@ static bool widget_remove(
     );
 }
 
-static bool widget_update_label(
+static bool widget_update_string_property(
         const char *config_dir,
         const char *name,
-        const char *label,
+        const char *property_name,
+        const char *value,
         bool quiet_failure) {
     g_autofree char *quoted =
-        nbcl_quote(label);
+        nbcl_quote(value);
     g_autofree char *property =
         quoted
             ? g_strdup_printf(
-                "label=%s",
+                "%s=%s",
+                property_name,
                 quoted
             )
             : NULL;
 
-    if (!quoted || !property) {
+    if (!property_name ||
+            property_name[0] == '\0' ||
+            !quoted ||
+            !property) {
         return false;
     }
 
@@ -542,23 +547,42 @@ static bool widget_create_button(
         const char *name,
         const char *label,
         const char *onclick,
+        const char *onrightclick,
         const char *css_class) {
     g_autofree char *name_q = nbcl_quote(name);
     g_autofree char *label_q = nbcl_quote(label);
     g_autofree char *onclick_q = nbcl_quote(onclick);
+    g_autofree char *onrightclick_q =
+        onrightclick
+            ? nbcl_quote(onrightclick)
+            : NULL;
     g_autofree char *class_q = nbcl_quote(css_class);
 
-    g_autofree char *definition =
-        name_q && label_q &&
-        onclick_q && class_q
-            ? g_strdup_printf(
-                "Button %s { label = %s onclick = %s class = %s }",
-                name_q,
-                label_q,
-                onclick_q,
-                class_q
-            )
-            : NULL;
+    g_autofree char *definition = NULL;
+
+    if (name_q &&
+            label_q &&
+            onclick_q &&
+            class_q) {
+        definition =
+            onrightclick_q
+                ? g_strdup_printf(
+                    "Button %s { label = %s onclick = %s "
+                    "onrightclick = %s class = %s }",
+                    name_q,
+                    label_q,
+                    onclick_q,
+                    onrightclick_q,
+                    class_q
+                )
+                : g_strdup_printf(
+                    "Button %s { label = %s onclick = %s class = %s }",
+                    name_q,
+                    label_q,
+                    onclick_q,
+                    class_q
+                );
+    }
 
     if (!definition) {
         return false;
@@ -604,6 +628,7 @@ static bool ensure_button(
         const char *name,
         const char *label,
         const char *onclick,
+        const char *onrightclick,
         const char *css_class) {
     const char *old_parent =
         g_hash_table_lookup(
@@ -615,13 +640,28 @@ static bool ensure_button(
             strcmp(
                 old_parent,
                 parent
-            ) == 0 &&
-            widget_update_label(
+            ) == 0) {
+        const bool label_ok =
+            widget_update_string_property(
                 config_dir,
                 name,
+                "label",
                 label,
-                true)) {
-        return true;
+                true
+            );
+        const bool rightclick_ok =
+            !onrightclick ||
+            widget_update_string_property(
+                config_dir,
+                name,
+                "onrightclick",
+                onrightclick,
+                true
+            );
+
+        if (label_ok && rightclick_ok) {
+            return true;
+        }
     }
 
     if (old_parent) {
@@ -642,6 +682,7 @@ static bool ensure_button(
             name,
             label,
             onclick,
+            onrightclick,
             css_class)) {
         return false;
     }
@@ -1143,12 +1184,73 @@ static bool sync_output_workspaces(
                 name,
                 label,
                 onclick,
+                NULL,
                 "onyrion-workspace")) {
             return false;
         }
     }
 
     return true;
+}
+
+static const char *single_group_window_id(
+        JsonArray *windows,
+        const char *group_id) {
+    const char *single_id = NULL;
+    guint count = 0;
+
+    if (!windows ||
+            !positive_decimal_id(
+                group_id,
+                NULL)) {
+        return NULL;
+    }
+
+    for (guint i = 0;
+            i < json_array_get_length(windows);
+            i++) {
+        JsonObject *window =
+            array_object(
+                windows,
+                i
+            );
+        const char *window_id =
+            required_string(
+                window,
+                "id"
+            );
+        const char *window_group_id =
+            required_string(
+                window,
+                "group_id"
+            );
+
+        if (!window_id ||
+                !window_group_id ||
+                !positive_decimal_id(
+                    window_id,
+                    NULL)) {
+            continue;
+        }
+
+        if (strcmp(
+                window_group_id,
+                group_id
+            ) != 0) {
+            continue;
+        }
+
+        count++;
+        single_id = window_id;
+
+        if (count > 1U) {
+            return NULL;
+        }
+    }
+
+    return count == 1U
+        ? single_id
+        : NULL;
 }
 
 static bool sync_output_groups(
@@ -1268,8 +1370,27 @@ static bool sync_output_groups(
                 "onyrionctl group focus %s",
                 id
             );
+        const char *single_window_id =
+            single_group_window_id(
+                windows,
+                id
+            );
+        g_autofree char *onrightclick =
+            g_strdup_printf(
+                "${ONYRION_SHELL_BIN:-onyrion-shell} "
+                "invoke ui:context-actions %s:%s",
+                single_window_id
+                    ? "window"
+                    : "group",
+                single_window_id
+                    ? single_window_id
+                    : id
+            );
 
-        if (!label || !name || !onclick) {
+        if (!label ||
+                !name ||
+                !onclick ||
+                !onrightclick) {
             return false;
         }
 
@@ -1285,6 +1406,7 @@ static bool sync_output_groups(
                 name,
                 label,
                 onclick,
+                onrightclick,
                 "onyrion-tab")) {
             return false;
         }

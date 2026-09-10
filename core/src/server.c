@@ -6,6 +6,7 @@
 #include "session_lock.h"
 #include "shell_protocol.h"
 #include "group.h"
+#include "group_surface.h"
 #include "input.h"
 #include "layout.h"
 #include "layer_shell.h"
@@ -351,6 +352,11 @@ bool onyrion_server_init(
 
     onyrion_group_init(server);
 
+    if (!onyrion_group_surface_init(server)) {
+        fprintf(stderr, "FAIL: onyrion_group_surface_init\n");
+        return false;
+    }
+
     if (!onyrion_workspace_init(server)) {
         fprintf(stderr, "FAIL: onyrion_workspace_init\n");
         return false;
@@ -420,6 +426,7 @@ void onyrion_server_finish(OnyrionServer *server) {
     onyrion_input_finish(server);
 
     onyrion_window_finish(server);
+    onyrion_group_surface_finish(server);
     onyrion_group_finish(server);
 
     onyrion_workspace_finish(server);

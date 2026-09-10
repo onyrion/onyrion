@@ -1,9 +1,13 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    process::Command,
+    io::{BufRead, BufReader},
+    process::{Child, ChildStdin, Command, Stdio},
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -14,6 +18,81 @@ use serde::Deserialize;
 
 const BLUETOOTH_WIDGET: &str = "onyrion-bluetooth-dynamic";
 const BLUETOOTH_STATUS_SIGNAL: &str = "onyrion_bluetooth_renderer_status";
+const BLUETOOTH_SCAN_TICK_MS: u64 = 100;
+const BLUETOOTH_SCAN_PERIOD_TICKS: u32 = 60;
+const BT_SCAN_STARTING: u8 = 0;
+const BT_SCAN_READY: u8 = 1;
+const BT_SCAN_FAILED: u8 = 2;
+
+struct BluetoothScanSession {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    state: Arc<AtomicU8>,
+}
+
+fn start_scan_session(host: Arc<dyn EwwiiAPI>) -> Result<BluetoothScanSession, String> {
+    let command = control_bin();
+    let mut child = Command::new(&command)
+        .args(["bluetooth", "scan", "hold"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("command={} error={}", command, error))?;
+
+    let stdin = child.stdin.take().ok_or_else(|| "missing child stdin".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "missing child stdout".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "missing child stderr".to_string())?;
+    let state = Arc::new(AtomicU8::new(BT_SCAN_STARTING));
+
+    let stdout_state = state.clone();
+    let stdout_host = host.clone();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            stdout_host.log(&format!("BLUETOOTH_SCAN_CHILD stdout={}", line));
+            if line.contains("CONTROL_OK bluetooth scan state=started mode=hold") {
+                stdout_state.store(BT_SCAN_READY, Ordering::Release);
+            }
+        }
+    });
+
+    let stderr_state = state.clone();
+    let stderr_host = host;
+    thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            stderr_host.error(&format!("BLUETOOTH_SCAN_CHILD stderr={}", line));
+            if line.contains("CONTROL_FAIL bluetooth scan") {
+                stderr_state.store(BT_SCAN_FAILED, Ordering::Release);
+            }
+        }
+    });
+
+    Ok(BluetoothScanSession {
+        child,
+        stdin: Some(stdin),
+        state,
+    })
+}
+
+fn stop_scan_session(host: Arc<dyn EwwiiAPI>, mut session: BluetoothScanSession, reason: &str) {
+    session.stdin.take();
+    let reason = reason.to_string();
+    thread::spawn(move || match session.child.wait() {
+        Ok(status) if status.success() => host.log(&format!(
+            "BLUETOOTH_SCAN_SESSION status=STOPPED reason={} rc=0",
+            reason
+        )),
+        Ok(status) => host.error(&format!(
+            "BLUETOOTH_SCAN_SESSION status=FAIL reason={} rc={:?}",
+            reason,
+            status.code()
+        )),
+        Err(error) => host.error(&format!(
+            "BLUETOOTH_SCAN_SESSION status=FAIL reason={} wait={}",
+            reason, error
+        )),
+    });
+}
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct ControlState {
@@ -62,7 +141,7 @@ struct PendingBluetoothState {
 enum BluetoothAction {
     Connect(String),
     Disconnect(String),
-    Pair(String),
+    PairConnect(String),
 }
 
 struct DeviceRow {
@@ -80,30 +159,180 @@ struct BluetoothUi {
 impl BluetoothUi {
     fn new(host: Arc<dyn EwwiiAPI>) -> Self {
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        root.set_hexpand(true);
+        root.set_halign(gtk4::Align::Fill);
+        root.set_vexpand(false);
 
         let state_label = gtk4::Label::new(Some("Bluetooth · loading"));
         state_label.set_halign(gtk4::Align::Start);
+        state_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        state_label.set_max_width_chars(36);
         state_label.add_css_class("onyrion-wifi-spaced");
 
-        let scan = gtk4::Button::with_label("Scan 6s");
+        let scan = gtk4::Button::with_label("Scan");
         scan.add_css_class("onyrion-shell-control");
         scan.add_css_class("onyrion-wifi-spaced");
-        scan.connect_clicked(move |_| {
-            spawn_control(
-                host.clone(),
-                vec![
-                    "bluetooth".to_string(),
-                    "scan".to_string(),
-                    "6".to_string(),
-                ],
-            );
-        });
+
+        let progress = gtk4::ProgressBar::new();
+        progress.add_css_class("onyrion-scan-progress");
+        progress.set_fraction(0.0);
+
+        let scan_tick = Rc::new(Cell::new(0u32));
+        let scan_timer: Rc<RefCell<Option<gtk4::glib::SourceId>>> =
+            Rc::new(RefCell::new(None));
+        let scan_session: Rc<RefCell<Option<BluetoothScanSession>>> =
+            Rc::new(RefCell::new(None));
+
+        {
+            let click_host = host.clone();
+            let click_tick = scan_tick.clone();
+            let click_timer = scan_timer.clone();
+            let click_session = scan_session.clone();
+            let click_progress = progress.clone();
+            scan.connect_clicked(move |button| {
+                if let Some(session) = click_session.borrow_mut().take() {
+                    click_tick.set(0);
+                    if let Some(id) = click_timer.borrow_mut().take() {
+                        id.remove();
+                    }
+                    button.set_label("Scan");
+                    click_progress.set_fraction(0.0);
+                    stop_scan_session(click_host.clone(), session, "toggle-off");
+                    return;
+                }
+
+                let session = match start_scan_session(click_host.clone()) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        click_host.error(&format!(
+                            "BLUETOOTH_SCAN_SESSION status=FAIL phase=spawn {}",
+                            error
+                        ));
+                        button.set_label("Scan · failed");
+                        click_progress.set_fraction(0.0);
+                        return;
+                    }
+                };
+
+                click_tick.set(0);
+                button.set_label("Scan · starting");
+                click_progress.set_fraction(0.0);
+                *click_session.borrow_mut() = Some(session);
+
+                let timer_host = click_host.clone();
+                let timer_tick = click_tick.clone();
+                let timer_button = button.clone();
+                let timer_progress = click_progress.clone();
+                let timer_session = click_session.clone();
+                let timer_slot = click_timer.clone();
+                let timer_id = gtk4::glib::timeout_add_local(
+                    Duration::from_millis(BLUETOOTH_SCAN_TICK_MS),
+                    move || {
+                        let (state, exited) = {
+                            let mut slot = timer_session.borrow_mut();
+                            let Some(session) = slot.as_mut() else {
+                                return gtk4::glib::ControlFlow::Break;
+                            };
+                            let state = session.state.load(Ordering::Acquire);
+                            let exited = match session.child.try_wait() {
+                                Ok(status) => status,
+                                Err(error) => {
+                                    timer_host.error(&format!(
+                                        "BLUETOOTH_SCAN_SESSION status=FAIL phase=try-wait error={}",
+                                        error
+                                    ));
+                                    None
+                                }
+                            };
+                            (state, exited)
+                        };
+
+                        if let Some(status) = exited {
+                            timer_session.borrow_mut().take();
+                            timer_tick.set(0);
+                            timer_button.set_label("Scan");
+                            timer_progress.set_fraction(0.0);
+                            timer_slot.borrow_mut().take();
+                            if !status.success() {
+                                timer_host.error(&format!(
+                                    "BLUETOOTH_SCAN_SESSION status=FAIL phase=running rc={:?}",
+                                    status.code()
+                                ));
+                            }
+                            return gtk4::glib::ControlFlow::Break;
+                        }
+
+                        if state == BT_SCAN_FAILED {
+                            if let Some(session) = timer_session.borrow_mut().take() {
+                                stop_scan_session(timer_host.clone(), session, "start-failed");
+                            }
+                            timer_tick.set(0);
+                            timer_button.set_label("Scan · failed");
+                            timer_progress.set_fraction(0.0);
+                            timer_slot.borrow_mut().take();
+                            return gtk4::glib::ControlFlow::Break;
+                        }
+
+                        if state != BT_SCAN_READY {
+                            timer_button.set_label("Scan · starting");
+                            return gtk4::glib::ControlFlow::Continue;
+                        }
+
+                        let next = (timer_tick.get() + 1).min(BLUETOOTH_SCAN_PERIOD_TICKS);
+                        timer_tick.set(next);
+                        timer_progress
+                            .set_fraction(next as f64 / BLUETOOTH_SCAN_PERIOD_TICKS as f64);
+                        let remaining =
+                            ((BLUETOOTH_SCAN_PERIOD_TICKS - next) * BLUETOOTH_SCAN_TICK_MS as u32 + 999)
+                                / 1000;
+                        if next >= BLUETOOTH_SCAN_PERIOD_TICKS {
+                            timer_button.set_label("Scan · on");
+                        } else {
+                            timer_button.set_label(&format!("Scan · {}s", remaining.max(1)));
+                        }
+                        gtk4::glib::ControlFlow::Continue
+                    },
+                );
+                *click_timer.borrow_mut() = Some(timer_id);
+            });
+        }
+
+        {
+            let unmap_host = host.clone();
+            let unmap_tick = scan_tick.clone();
+            let unmap_timer = scan_timer.clone();
+            let unmap_session = scan_session.clone();
+            let unmap_button = scan.clone();
+            let unmap_progress = progress.clone();
+            root.connect_unmap(move |_| {
+                unmap_tick.set(0);
+                if let Some(id) = unmap_timer.borrow_mut().take() {
+                    id.remove();
+                }
+                unmap_button.set_label("Scan");
+                unmap_progress.set_fraction(0.0);
+                if let Some(session) = unmap_session.borrow_mut().take() {
+                    stop_scan_session(unmap_host.clone(), session, "panel-unmap");
+                }
+            });
+        }
 
         let devices_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        devices_box.set_hexpand(true);
+
+        let devices_scroll = gtk4::ScrolledWindow::new();
+        devices_scroll.set_hexpand(true);
+        devices_scroll.set_halign(gtk4::Align::Fill);
+        devices_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        devices_scroll.set_propagate_natural_height(true);
+        devices_scroll.set_max_content_height(280);
+        devices_scroll.set_vexpand(false);
+        devices_scroll.set_child(Some(&devices_box));
 
         root.append(&state_label);
         root.append(&scan);
-        root.append(&devices_box);
+        root.append(&progress);
+        root.append(&devices_scroll);
 
         Self {
             root,
@@ -174,7 +403,7 @@ fn device_action(device: &BluetoothDevice) -> Option<BluetoothAction> {
     } else if device.paired {
         Some(BluetoothAction::Connect(address))
     } else {
-        Some(BluetoothAction::Pair(address))
+        Some(BluetoothAction::PairConnect(address))
     }
 }
 
@@ -236,20 +465,62 @@ fn run_action(host: Arc<dyn EwwiiAPI>, action: BluetoothAction) {
                 address,
             ],
         ),
-        BluetoothAction::Pair(address) => spawn_control(
-            host,
-            vec![
-                "bluetooth".to_string(),
-                "device".to_string(),
-                "pair".to_string(),
-                address,
-            ],
-        ),
+        BluetoothAction::PairConnect(address) => {
+            thread::spawn(move || {
+                let command = control_bin();
+                let pair = Command::new(&command)
+                    .args(["bluetooth", "device", "pair", address.as_str()])
+                    .status();
+                match pair {
+                    Ok(status) if status.success() => {}
+                    Ok(status) => {
+                        host.error(&format!(
+                            "BLUETOOTH_RENDERER_ACTION status=FAIL command={} action=pair rc={:?} address={}",
+                            command, status.code(), address
+                        ));
+                        return;
+                    }
+                    Err(error) => {
+                        host.error(&format!(
+                            "BLUETOOTH_RENDERER_ACTION status=FAIL command={} action=pair error={} address={}",
+                            command, error, address
+                        ));
+                        return;
+                    }
+                }
+
+                match Command::new(&command)
+                    .args(["bluetooth", "device", "connect", address.as_str()])
+                    .status()
+                {
+                    Ok(status) if status.success() => host.log(&format!(
+                        "BLUETOOTH_RENDERER_ACTION status=PASS command={} action=pair-connect address={}",
+                        command, address
+                    )),
+                    Ok(status) => host.error(&format!(
+                        "BLUETOOTH_RENDERER_ACTION status=FAIL command={} action=connect rc={:?} address={}",
+                        command, status.code(), address
+                    )),
+                    Err(error) => host.error(&format!(
+                        "BLUETOOTH_RENDERER_ACTION status=FAIL command={} action=connect error={} address={}",
+                        command, error, address
+                    )),
+                }
+            });
+        }
     }
 }
 
 fn create_device_row(host: Arc<dyn EwwiiAPI>, device: &BluetoothDevice) -> DeviceRow {
     let button = gtk4::Button::with_label(&device_label(device));
+    button.add_css_class("onyrion-list-row");
+    button.set_tooltip_text(button.label().as_deref());
+    if let Some(label) = button.child().and_then(|child| child.downcast::<gtk4::Label>().ok()) {
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.set_max_width_chars(36);
+        label.set_xalign(0.0);
+    }
+    button.set_focusable(false);
     button.add_css_class("onyrion-wifi-slot-live");
     button.add_css_class("onyrion-wifi-spaced");
 
@@ -268,7 +539,9 @@ fn create_device_row(host: Arc<dyn EwwiiAPI>, device: &BluetoothDevice) -> Devic
 }
 
 fn update_device_row(row: &DeviceRow, device: &BluetoothDevice) {
-    row.button.set_label(&device_label(device));
+    let label = device_label(device);
+    row.button.set_label(&label);
+    row.button.set_tooltip_text(Some(&label));
     let action = device_action(device);
     row.button.set_sensitive(action.is_some());
     row.action.replace(action);
@@ -280,7 +553,17 @@ fn reconcile_devices(
     rows: &mut HashMap<String, DeviceRow>,
     devices: &[BluetoothDevice],
 ) {
-    let wanted: HashSet<String> = devices.iter().filter_map(device_key).collect();
+    let mut ordered: Vec<&BluetoothDevice> = devices.iter().collect();
+    ordered.sort_by(|left, right| {
+        right
+            .connected
+            .cmp(&left.connected)
+            .then_with(|| right.paired.cmp(&left.paired))
+            .then_with(|| device_name(left).to_lowercase().cmp(&device_name(right).to_lowercase()))
+            .then_with(|| device_key(left).cmp(&device_key(right)))
+    });
+
+    let wanted: HashSet<String> = ordered.iter().filter_map(|device| device_key(device)).collect();
     let stale: Vec<String> = rows
         .keys()
         .filter(|key| !wanted.contains(*key))
@@ -293,7 +576,7 @@ fn reconcile_devices(
         }
     }
 
-    for device in devices {
+    for device in &ordered {
         let Some(key) = device_key(device) else {
             continue;
         };
@@ -306,6 +589,17 @@ fn reconcile_devices(
         let row = create_device_row(host.clone(), device);
         container.append(&row.button);
         rows.insert(key, row);
+    }
+
+    let mut previous: Option<gtk4::Widget> = None;
+    for device in ordered {
+        let Some(key) = device_key(device) else {
+            continue;
+        };
+        if let Some(row) = rows.get(&key) {
+            container.reorder_child_after(&row.button, previous.as_ref());
+            previous = Some(row.button.clone().upcast());
+        }
     }
 }
 
@@ -502,7 +796,7 @@ mod tests {
         );
         assert_eq!(
             device_action(&device(false, false)),
-            Some(BluetoothAction::Pair(
+            Some(BluetoothAction::PairConnect(
                 "AA:BB:CC:DD:EE:FF".to_string()
             ))
         );

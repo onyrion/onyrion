@@ -105,6 +105,15 @@ static void focus_first(LockController *c) {
     onyrion_input_focus_surface(c->server, NULL);
 }
 
+void onyrion_session_lock_refresh_keyboard_focus(
+        struct onyrion_server *server) {
+    if (!onyrion_session_lock_active(server)) {
+        return;
+    }
+
+    focus_first(server->session_lock);
+}
+
 static void deactivate_surfaces(LockController *c) {
     LockSurface *entry;
     wl_list_for_each(entry, &c->surfaces, link) {

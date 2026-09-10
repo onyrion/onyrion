@@ -53,6 +53,9 @@ typedef enum onyrion_action_kind {
     ONYRION_ACTION_GROUP_SPLIT_AT,
     ONYRION_ACTION_WINDOW_FLOAT,
     ONYRION_ACTION_WINDOW_TILE,
+    ONYRION_ACTION_GROUP_FLOAT,
+    ONYRION_ACTION_GROUP_TILE,
+    ONYRION_ACTION_GROUP_SET_PINNED,
     ONYRION_ACTION_KIND_COUNT,
 } OnyrionActionKind;
 
@@ -77,6 +80,11 @@ typedef struct onyrion_action_object_split {
     OnyrionActionSplitOrientation split_orientation;
 } OnyrionActionObjectSplit;
 
+typedef struct onyrion_action_object_state {
+    uint64_t object_id;
+    bool enabled;
+} OnyrionActionObjectState;
+
 typedef struct onyrion_action_request {
     OnyrionActionKind kind;
 
@@ -87,6 +95,7 @@ typedef struct onyrion_action_request {
         OnyrionActionObjectPair object_pair;
         OnyrionActionObjectRange object_range;
         OnyrionActionObjectSplit object_split;
+        OnyrionActionObjectState object_state;
         OnyrionShellInvokeAction shell_invoke;
     };
 } OnyrionActionRequest;

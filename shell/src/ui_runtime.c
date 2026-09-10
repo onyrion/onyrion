@@ -932,8 +932,18 @@ static char *tab_button_definition(
             quoted_shell,
             quoted_id
         );
+    g_autofree char *rightclick_command =
+        g_strdup_printf(
+            "%s invoke ui:context-actions window:%s",
+            quoted_shell,
+            quoted_id
+        );
     g_autofree char *quoted_command =
         json_quote_string(command);
+    g_autofree char *quoted_rightclick_command =
+        json_quote_string(
+            rightclick_command
+        );
 
     if (!name ||
             !quoted_label ||
@@ -941,7 +951,9 @@ static char *tab_button_definition(
             !quoted_shell ||
             !quoted_id ||
             !command ||
-            !quoted_command) {
+            !rightclick_command ||
+            !quoted_command ||
+            !quoted_rightclick_command) {
         return NULL;
     }
 
@@ -951,12 +963,14 @@ static char *tab_button_definition(
         "tooltip = %s "
         "width = 104 "
         "onclick = %s "
+        "onrightclick = %s "
         "class = \"onyrion-tab\" "
         "}",
         name,
         quoted_label,
         quoted_tooltip,
-        quoted_command
+        quoted_command,
+        quoted_rightclick_command
     );
 }
 

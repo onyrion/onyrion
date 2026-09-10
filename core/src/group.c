@@ -1,5 +1,7 @@
 #include "group.h"
+#include "group_surface.h"
 #include "input.h"
+#include "layer_shell.h"
 #include "layout.h"
 #include "output.h"
 #include "server.h"
@@ -10,6 +12,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
 
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
@@ -49,7 +52,7 @@ static OnyrionGroup *find_last_group_in_workspace(
     return result;
 }
 
-static OnyrionGroup *find_group_by_id(
+OnyrionGroup *onyrion_group_find_id(
         OnyrionServer *server,
         uint64_t id) {
     if (!server ||
@@ -157,16 +160,326 @@ static size_t mapped_window_count(
     return count;
 }
 
+bool onyrion_group_box(
+        const OnyrionGroup *group,
+        struct wlr_box *box) {
+    if (!group || !box) {
+        return false;
+    }
+
+    if (group->placement ==
+            ONYRION_GROUP_PLACEMENT_TILED) {
+        if (!group->tile ||
+                group->tile->width <= 0 ||
+                group->tile->height <= 0) {
+            return false;
+        }
+
+        *box = (struct wlr_box){
+            .x = group->tile->x,
+            .y = group->tile->y,
+            .width = group->tile->width,
+            .height = group->tile->height,
+        };
+
+        return true;
+    }
+
+    if (group->placement ==
+            ONYRION_GROUP_PLACEMENT_FLOATING &&
+            group->floating_width > 0 &&
+            group->floating_height > 0) {
+        *box = (struct wlr_box){
+            .x = group->floating_x,
+            .y = group->floating_y,
+            .width = group->floating_width,
+            .height = group->floating_height,
+        };
+
+        return true;
+    }
+
+    return false;
+}
+
+static void effective_content_insets(
+        const OnyrionGroup *group,
+        int *top,
+        int *right,
+        int *bottom,
+        int *left) {
+    *top = 0;
+    *right = 0;
+    *bottom = 0;
+    *left = 0;
+
+    if (!group) {
+        return;
+    }
+
+    if (group->shell_content_insets_set) {
+        *top = group->content_inset_top;
+        *right = group->content_inset_right;
+        *bottom = group->content_inset_bottom;
+        *left = group->content_inset_left;
+        return;
+    }
+
+    *top = ONYRION_GROUP_CHROME_HEIGHT;
+}
+
+void onyrion_group_content_overhead(
+        const OnyrionGroup *group,
+        int *width,
+        int *height) {
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+    int left = 0;
+
+    effective_content_insets(
+        group,
+        &top,
+        &right,
+        &bottom,
+        &left
+    );
+
+    if (width) {
+        *width = left + right;
+    }
+
+    if (height) {
+        *height = top + bottom;
+    }
+}
+
+bool onyrion_group_content_box(
+        const OnyrionGroup *group,
+        struct wlr_box *box) {
+    struct wlr_box outer = {0};
+
+    if (!box || !onyrion_group_box(group, &outer) ||
+            outer.width <= 0 || outer.height <= 0) {
+        return false;
+    }
+
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+    int left = 0;
+
+    effective_content_insets(
+        group,
+        &top,
+        &right,
+        &bottom,
+        &left
+    );
+
+    if (left < 0) left = 0;
+    if (right < 0) right = 0;
+    if (top < 0) top = 0;
+    if (bottom < 0) bottom = 0;
+
+    if (left >= outer.width) left = outer.width - 1;
+    int remaining_width = outer.width - left;
+    if (right >= remaining_width) right = remaining_width - 1;
+
+    if (top >= outer.height) top = outer.height - 1;
+    int remaining_height = outer.height - top;
+    if (bottom >= remaining_height) bottom = remaining_height - 1;
+
+    *box = (struct wlr_box){
+        .x = outer.x + left,
+        .y = outer.y + top,
+        .width = outer.width - left - right,
+        .height = outer.height - top - bottom,
+    };
+
+    return box->width > 0 && box->height > 0;
+}
+
+bool onyrion_group_set_content_insets(
+        OnyrionGroup *group,
+        struct wl_resource *owner_resource,
+        int top,
+        int right,
+        int bottom,
+        int left) {
+    if (!group || !owner_resource ||
+            top < 0 || right < 0 || bottom < 0 || left < 0) {
+        return false;
+    }
+
+    group->shell_content_insets_set = true;
+    group->content_insets_owner = owner_resource;
+    group->content_inset_top = top;
+    group->content_inset_right = right;
+    group->content_inset_bottom = bottom;
+    group->content_inset_left = left;
+
+    onyrion_group_apply_geometry(group);
+    return true;
+}
+
+static bool floating_default_box(
+        const OnyrionGroup *group,
+        struct wlr_box *box) {
+    if (!group ||
+            !group->workspace ||
+            !box) {
+        return false;
+    }
+
+    struct wlr_box usable = {0};
+
+    onyrion_layer_shell_get_output_usable_box(
+        group->server,
+        group->workspace->output
+            ? group->workspace->output->wlr_output
+            : NULL,
+        &usable
+    );
+
+    if (usable.width <= 0 ||
+            usable.height <= 0) {
+        return false;
+    }
+
+    int width = usable.width * 2 / 3;
+    int height = usable.height * 2 / 3;
+
+    if (width <= 0) {
+        width = usable.width;
+    }
+
+    if (height <= 0) {
+        height = usable.height;
+    }
+
+    *box = (struct wlr_box){
+        .x = usable.x + (usable.width - width) / 2,
+        .y = usable.y + (usable.height - height) / 2,
+        .width = width,
+        .height = height,
+    };
+
+    return true;
+}
+
+void onyrion_group_apply_geometry(
+        OnyrionGroup *group) {
+    if (!group) {
+        return;
+    }
+
+    if (group->placement ==
+            ONYRION_GROUP_PLACEMENT_TILED) {
+        onyrion_layout_apply_group(group);
+        return;
+    }
+
+    if (group->placement !=
+                ONYRION_GROUP_PLACEMENT_FLOATING ||
+            !group->active ||
+            !group->active->scene_tree ||
+            group->floating_width <= 0 ||
+            group->floating_height <= 0) {
+        onyrion_group_refresh_chrome(group);
+        return;
+    }
+
+    OnyrionWindow *window = group->active;
+
+    if (window->fullscreen) {
+        struct wlr_box box = {0};
+
+        wlr_output_layout_get_box(
+            group->server->output_layout,
+            group->workspace &&
+                    group->workspace->output
+                ? group->workspace->output->wlr_output
+                : NULL,
+            &box
+        );
+
+        if (box.width > 0 &&
+                box.height > 0) {
+            window->x = box.x;
+            window->y = box.y;
+            window->width = box.width;
+            window->height = box.height;
+
+            wlr_scene_node_set_position(
+                &window->scene_tree->node,
+                box.x,
+                box.y
+            );
+
+            wlr_scene_node_raise_to_top(
+                &window->scene_tree->node
+            );
+
+            if (window->toplevel->base->initialized) {
+                wlr_xdg_toplevel_set_size(
+                    window->toplevel,
+                    box.width,
+                    box.height
+                );
+            }
+
+            onyrion_window_reflow_transients(window);
+            onyrion_group_refresh_chrome(group);
+            return;
+        }
+    }
+
+    struct wlr_box content = {0};
+
+    if (!onyrion_group_content_box(group, &content)) {
+        onyrion_group_refresh_chrome(group);
+        return;
+    }
+
+    window->x = content.x;
+    window->y = content.y;
+    window->width = content.width;
+    window->height = content.height;
+
+    wlr_scene_node_set_position(
+        &window->scene_tree->node,
+        window->x,
+        window->y
+    );
+
+    wlr_scene_node_raise_to_top(
+        &window->scene_tree->node
+    );
+
+    if (window->toplevel->base->initialized) {
+        wlr_xdg_toplevel_set_size(
+            window->toplevel,
+            window->width,
+            window->height
+        );
+    }
+
+    onyrion_window_reflow_transients(window);
+    onyrion_group_refresh_chrome(group);
+}
+
 static int chrome_height(
         const OnyrionGroup *group) {
-    if (!group ||
-            !group->tile ||
-            group->tile->height <= 1) {
+    struct wlr_box box = {0};
+
+    if (!onyrion_group_box(group, &box) ||
+            box.height <= 1) {
         return 0;
     }
 
     const int maximum =
-        group->tile->height - 1;
+        box.height - 1;
 
     return
         ONYRION_GROUP_CHROME_HEIGHT < maximum
@@ -176,14 +489,15 @@ static int chrome_height(
 
 static int chrome_handle_width(
         const OnyrionGroup *group) {
-    if (!group ||
-            !group->tile ||
-            group->tile->width <= 1) {
+    struct wlr_box box = {0};
+
+    if (!onyrion_group_box(group, &box) ||
+            box.width <= 1) {
         return 0;
     }
 
     const int maximum =
-        group->tile->width - 1;
+        box.width - 1;
 
     return
         ONYRION_GROUP_HANDLE_WIDTH < maximum
@@ -212,6 +526,11 @@ void onyrion_group_refresh_chrome(
     }
 
     destroy_chrome(group);
+    onyrion_group_surface_refresh(group);
+
+    if (group->shell_content_insets_set) {
+        return;
+    }
 
     const size_t count =
         mapped_window_count(group);
@@ -219,13 +538,15 @@ void onyrion_group_refresh_chrome(
     const int height =
         chrome_height(group);
 
-    if (!group->tile ||
-            !group->workspace ||
+    struct wlr_box box = {0};
+
+    if (!group->workspace ||
             !group->workspace->scene_tree ||
             !group->active ||
             group->active->fullscreen ||
             count == 0 ||
-            group->tile->width <= 0 ||
+            !onyrion_group_box(group, &box) ||
+            box.width <= 0 ||
             height <= 0) {
         return;
     }
@@ -246,15 +567,15 @@ void onyrion_group_refresh_chrome(
 
     wlr_scene_node_set_position(
         &group->chrome_tree->node,
-        group->tile->x,
-        group->tile->y
+        box.x,
+        box.y
     );
 
     const int handle_width =
         chrome_handle_width(group);
 
     const int tabs_width =
-        group->tile->width -
+        box.width -
         handle_width;
 
     if (handle_width > 0) {
@@ -374,10 +695,10 @@ void onyrion_group_refresh_chrome(
         group->id,
         count,
         handle_width,
-        group->tile->width,
+        box.width,
         height,
-        group->tile->x,
-        group->tile->y
+        box.x,
+        box.y
     );
 }
 
@@ -395,8 +716,7 @@ OnyrionGroup *onyrion_group_chrome_at(
             group,
             &server->groups,
             link) {
-        if (!group->tile ||
-                !group->workspace ||
+        if (!group->workspace ||
                 !onyrion_workspace_is_visible(
                     group->workspace) ||
                 !group->active ||
@@ -404,20 +724,16 @@ OnyrionGroup *onyrion_group_chrome_at(
             continue;
         }
 
+        struct wlr_box box = {0};
         const int height =
             chrome_height(group);
 
-        if (height <= 0 ||
-                x < (double)group->tile->x ||
-                x >= (double)(
-                    group->tile->x +
-                    group->tile->width
-                ) ||
-                y < (double)group->tile->y ||
-                y >= (double)(
-                    group->tile->y +
-                    height
-                )) {
+        if (!onyrion_group_box(group, &box) ||
+                height <= 0 ||
+                x < (double)box.x ||
+                x >= (double)(box.x + box.width) ||
+                y < (double)box.y ||
+                y >= (double)(box.y + height)) {
             continue;
         }
 
@@ -449,8 +765,14 @@ OnyrionGroup *onyrion_group_handle_at(
         return NULL;
     }
 
+    struct wlr_box box = {0};
+
+    if (!onyrion_group_box(group, &box)) {
+        return NULL;
+    }
+
     const int local_x =
-        (int)x - group->tile->x;
+        (int)x - box.x;
 
     return
         local_x >= 0 &&
@@ -459,26 +781,24 @@ OnyrionGroup *onyrion_group_handle_at(
             : NULL;
 }
 
-struct onyrion_window *onyrion_group_tab_at(
-        struct onyrion_server *server,
+static bool group_tab_slot_at(
+        OnyrionGroup *group,
         double x,
-        double y) {
-    OnyrionGroup *group =
-        onyrion_group_chrome_at(
-            server,
-            x,
-            y
-        );
+        OnyrionWindow **window_out,
+        int *start_out,
+        int *width_out) {
+    struct wlr_box box = {0};
 
-    if (!group) {
-        return NULL;
+    if (!group ||
+            !onyrion_group_box(group, &box)) {
+        return false;
     }
 
     const size_t count =
         mapped_window_count(group);
 
     if (count == 0) {
-        return NULL;
+        return false;
     }
 
     const int handle_width =
@@ -486,15 +806,15 @@ struct onyrion_window *onyrion_group_tab_at(
 
     const int local_x =
         (int)x -
-        group->tile->x -
+        box.x -
         handle_width;
 
     if (local_x < 0) {
-        return NULL;
+        return false;
     }
 
     const int tabs_width =
-        group->tile->width -
+        box.width -
         handle_width;
 
     const int base_width =
@@ -524,14 +844,115 @@ struct onyrion_window *onyrion_group_tab_at(
         if (width > 0 &&
                 local_x >= offset_x &&
                 local_x < offset_x + width) {
-            return window;
+            if (window_out) {
+                *window_out = window;
+            }
+
+            if (start_out) {
+                *start_out = offset_x;
+            }
+
+            if (width_out) {
+                *width_out = width;
+            }
+
+            return true;
         }
 
         offset_x += width;
         index++;
     }
 
-    return NULL;
+    return false;
+}
+
+struct onyrion_window *onyrion_group_tab_at(
+        struct onyrion_server *server,
+        double x,
+        double y) {
+    OnyrionGroup *group =
+        onyrion_group_chrome_at(
+            server,
+            x,
+            y
+        );
+
+    if (!group) {
+        return NULL;
+    }
+
+    OnyrionWindow *window = NULL;
+
+    return group_tab_slot_at(
+            group,
+            x,
+            &window,
+            NULL,
+            NULL)
+        ? window
+        : NULL;
+}
+
+bool onyrion_group_insert_target_at(
+        struct onyrion_server *server,
+        double x,
+        double y,
+        OnyrionGroupInsertTarget *target) {
+    if (!target) {
+        return false;
+    }
+
+    OnyrionGroup *group =
+        onyrion_group_chrome_at(
+            server,
+            x,
+            y
+        );
+
+    if (!group) {
+        return false;
+    }
+
+    OnyrionWindow *reference = NULL;
+    int start = 0;
+    int width = 0;
+
+    if (!group_tab_slot_at(
+            group,
+            x,
+            &reference,
+            &start,
+            &width) ||
+            !reference ||
+            width <= 0) {
+        return false;
+    }
+
+    const int handle_width =
+        chrome_handle_width(group);
+
+    struct wlr_box box = {0};
+
+    if (!onyrion_group_box(group, &box)) {
+        return false;
+    }
+
+    const int local_x =
+        (int)x -
+        box.x -
+        handle_width;
+
+    *target =
+        (OnyrionGroupInsertTarget){
+            .group_id = group->id,
+            .reference_window_id = reference->id,
+            .side =
+                local_x - start < width / 2
+                    ? ONYRION_GROUP_INSERT_BEFORE
+                    : ONYRION_GROUP_INSERT_AFTER,
+        };
+
+    return true;
 }
 
 static void set_active_window(
@@ -543,7 +964,7 @@ static void set_active_window(
 
     group->active = active;
 
-    onyrion_layout_apply_group(group);
+    onyrion_group_apply_geometry(group);
 
     wl_list_for_each(
             window,
@@ -598,6 +1019,11 @@ static void destroy_group(OnyrionGroup *group) {
     OnyrionWorkspace *workspace =
         group->workspace;
 
+    onyrion_input_cancel_chrome_drag_group(
+        server,
+        group->id
+    );
+
     const bool was_workspace_active =
         workspace &&
         workspace->active_group == group;
@@ -606,6 +1032,7 @@ static void destroy_group(OnyrionGroup *group) {
         server->active_group == group;
 
     destroy_chrome(group);
+    onyrion_group_surface_group_destroyed(group);
     onyrion_layout_remove_group(group);
 
     wl_list_remove(&group->link);
@@ -680,6 +1107,8 @@ OnyrionGroup *onyrion_group_create_in_workspace(
 
     group->server = server;
     group->workspace = workspace;
+    group->placement =
+        ONYRION_GROUP_PLACEMENT_TILED;
 
     wl_list_init(&group->windows);
 
@@ -738,7 +1167,10 @@ void onyrion_group_add_window(
     window->workspace =
         group->workspace;
     window->placement =
-        ONYRION_WINDOW_PLACEMENT_TILED;
+        group->placement ==
+                ONYRION_GROUP_PLACEMENT_FLOATING
+            ? ONYRION_WINDOW_PLACEMENT_FLOATING
+            : ONYRION_WINDOW_PLACEMENT_TILED;
 
     if (group->workspace &&
             group->workspace->scene_tree) {
@@ -889,7 +1321,7 @@ bool onyrion_group_focus_id(
         struct onyrion_server *server,
         uint64_t id) {
     OnyrionGroup *group =
-        find_group_by_id(
+        onyrion_group_find_id(
             server,
             id
         );
@@ -1055,7 +1487,7 @@ bool onyrion_group_move_window_id(
         );
 
     OnyrionGroup *target =
-        find_group_by_id(
+        onyrion_group_find_id(
             server,
             target_group_id
         );
@@ -1077,6 +1509,97 @@ bool onyrion_group_move_window_id(
     return window->group == target;
 }
 
+bool onyrion_group_move_window_relative_id(
+        struct onyrion_server *server,
+        uint64_t window_id,
+        uint64_t reference_window_id,
+        OnyrionGroupInsertSide side) {
+    OnyrionWindow *window =
+        find_window_by_id(
+            server,
+            window_id
+        );
+
+    OnyrionWindow *reference =
+        find_window_by_id(
+            server,
+            reference_window_id
+        );
+
+    if (!window ||
+            !reference ||
+            window == reference ||
+            !window->group ||
+            !reference->group ||
+            !window->mapped ||
+            !reference->mapped ||
+            window->group->workspace !=
+                reference->group->workspace) {
+        return false;
+    }
+
+    OnyrionGroup *target =
+        reference->group;
+
+    if (window->group == target) {
+        const bool already_placed =
+            side == ONYRION_GROUP_INSERT_BEFORE
+                ? window->group_link.next ==
+                    &reference->group_link
+                : window->group_link.prev ==
+                    &reference->group_link;
+
+        if (already_placed) {
+            return false;
+        }
+    } else {
+        onyrion_group_move_window(
+            window,
+            target
+        );
+
+        if (window->group != target) {
+            return false;
+        }
+    }
+
+    wl_list_remove(
+        &window->group_link
+    );
+
+    if (side == ONYRION_GROUP_INSERT_BEFORE) {
+        wl_list_insert(
+            reference->group_link.prev,
+            &window->group_link
+        );
+    } else {
+        wl_list_insert(
+            &reference->group_link,
+            &window->group_link
+        );
+    }
+
+    onyrion_group_refresh_chrome(target);
+    onyrion_shell_protocol_mark_changed(server);
+
+    wlr_log(
+        WLR_INFO,
+        "Window positioned in Group:"
+        " window=%" PRIu64
+        " target_group=%" PRIu64
+        " reference=%" PRIu64
+        " side=%s",
+        window->id,
+        target->id,
+        reference->id,
+        side == ONYRION_GROUP_INSERT_BEFORE
+            ? "before"
+            : "after"
+    );
+
+    return true;
+}
+
 bool onyrion_group_move_window_to_layout_zone_id(
         struct onyrion_server *server,
         uint64_t window_id,
@@ -1089,7 +1612,7 @@ bool onyrion_group_move_window_to_layout_zone_id(
         );
 
     OnyrionGroup *target =
-        find_group_by_id(
+        onyrion_group_find_id(
             server,
             target_group_id
         );
@@ -1178,13 +1701,13 @@ bool onyrion_group_merge_id(
         uint64_t source_group_id,
         uint64_t target_group_id) {
     OnyrionGroup *source =
-        find_group_by_id(
+        onyrion_group_find_id(
             server,
             source_group_id
         );
 
     OnyrionGroup *target =
-        find_group_by_id(
+        onyrion_group_find_id(
             server,
             target_group_id
         );
@@ -1248,6 +1771,9 @@ bool onyrion_group_split_window_id(
     if (!window ||
             !window->group ||
             !window->mapped ||
+            window->group->placement !=
+                ONYRION_GROUP_PLACEMENT_TILED ||
+            !window->group->tile ||
             window->group->window_count < 2) {
         return false;
     }
@@ -1283,7 +1809,10 @@ bool onyrion_group_split_at_window_id(
     OnyrionGroup *source =
         first->group;
 
-    if (source->window_count < 2 ||
+    if (source->placement !=
+                ONYRION_GROUP_PLACEMENT_TILED ||
+            !source->tile ||
+            source->window_count < 2 ||
             source->windows.next ==
                 &first->group_link) {
         return false;
@@ -1362,7 +1891,7 @@ bool onyrion_group_move_window_range_ids(
         );
 
     OnyrionGroup *target =
-        find_group_by_id(
+        onyrion_group_find_id(
             server,
             target_group_id
         );
@@ -1468,12 +1997,360 @@ bool onyrion_group_move_window_range_ids(
     return true;
 }
 
+bool onyrion_group_float_id(
+        struct onyrion_server *server,
+        uint64_t group_id) {
+    OnyrionGroup *group =
+        onyrion_group_find_id(server, group_id);
+
+    if (!group ||
+            !group->workspace ||
+            group->placement !=
+                ONYRION_GROUP_PLACEMENT_TILED ||
+            !group->tile ||
+            (group->active &&
+                group->active->fullscreen)) {
+        return false;
+    }
+
+    struct wlr_box box = {0};
+
+    if (!floating_default_box(group, &box)) {
+        return false;
+    }
+
+    onyrion_layout_remove_group(group);
+
+    group->placement =
+        ONYRION_GROUP_PLACEMENT_FLOATING;
+    group->pinned_output = NULL;
+    group->floating_x = box.x;
+    group->floating_y = box.y;
+    group->floating_width = box.width;
+    group->floating_height = box.height;
+
+    OnyrionWindow *window;
+
+    wl_list_for_each(
+            window,
+            &group->windows,
+            group_link) {
+        window->placement =
+            ONYRION_WINDOW_PLACEMENT_FLOATING;
+        window->workspace = group->workspace;
+    }
+
+    onyrion_group_apply_geometry(group);
+
+    if (group->active &&
+            group->active->mapped) {
+        onyrion_group_focus_window(group->active);
+    }
+
+    onyrion_shell_protocol_mark_changed(server);
+
+    wlr_log(
+        WLR_INFO,
+        "Group floating: group=%" PRIu64
+        " workspace=%" PRIu64
+        " geometry=%dx%d+%d+%d",
+        group->id,
+        group->workspace->id,
+        group->floating_width,
+        group->floating_height,
+        group->floating_x,
+        group->floating_y
+    );
+
+    return true;
+}
+
+bool onyrion_group_tile_id(
+        struct onyrion_server *server,
+        uint64_t group_id) {
+    OnyrionGroup *group =
+        onyrion_group_find_id(server, group_id);
+
+    if (!group ||
+            !group->workspace ||
+            group->placement !=
+                ONYRION_GROUP_PLACEMENT_FLOATING ||
+            group->tile ||
+            (group->active &&
+                group->active->fullscreen)) {
+        return false;
+    }
+
+    group->placement =
+        ONYRION_GROUP_PLACEMENT_TILED;
+
+    if (!onyrion_layout_add_group(
+            group,
+            ONYRION_SPLIT_HORIZONTAL)) {
+        group->placement =
+            ONYRION_GROUP_PLACEMENT_FLOATING;
+        onyrion_group_refresh_chrome(group);
+        return false;
+    }
+
+    group->pinned_output = NULL;
+
+    OnyrionWindow *window;
+
+    wl_list_for_each(
+            window,
+            &group->windows,
+            group_link) {
+        window->placement =
+            ONYRION_WINDOW_PLACEMENT_TILED;
+        window->workspace = group->workspace;
+    }
+
+    onyrion_group_apply_geometry(group);
+
+    if (group->active &&
+            group->active->mapped) {
+        onyrion_group_focus_window(group->active);
+    }
+
+    onyrion_shell_protocol_mark_changed(server);
+
+    wlr_log(
+        WLR_INFO,
+        "Group tiled: group=%" PRIu64
+        " workspace=%" PRIu64,
+        group->id,
+        group->workspace->id
+    );
+
+    return true;
+}
+
+static void move_group_scene_to_workspace(
+        OnyrionGroup *group,
+        OnyrionWorkspace *target) {
+    if (!group || !target) {
+        return;
+    }
+
+    destroy_chrome(group);
+    group->workspace = target;
+
+    OnyrionWindow *window;
+
+    wl_list_for_each(
+            window,
+            &group->windows,
+            group_link) {
+        window->workspace = target;
+
+        if (target->scene_tree &&
+                window->scene_tree) {
+            wlr_scene_node_reparent(
+                &window->scene_tree->node,
+                target->scene_tree
+            );
+        }
+
+        onyrion_window_move_transients_to_workspace(
+            window,
+            target
+        );
+    }
+
+    /*
+     * Group surfaces stack relative to the active window. Move every Group
+     * window first so the surface and its sibling share the target parent
+     * before onyrion_group_surface_reparent() reapplies z-order.
+     */
+    if (target->scene_tree) {
+        onyrion_group_surface_reparent(group, target->scene_tree);
+    }
+}
+
+static bool move_floating_group_to_workspace(
+        OnyrionGroup *group,
+        OnyrionWorkspace *target,
+        bool pin_follow) {
+    if (!group ||
+            group->placement !=
+                ONYRION_GROUP_PLACEMENT_FLOATING ||
+            !group->workspace ||
+            !target ||
+            !target->output ||
+            group->workspace == target) {
+        return false;
+    }
+
+    OnyrionServer *server = group->server;
+    OnyrionWorkspace *source = group->workspace;
+    OnyrionOutput *source_output = source->output;
+    const bool was_source_active =
+        source->active_group == group;
+    const bool was_server_active =
+        server->active_group == group;
+
+    move_group_scene_to_workspace(group, target);
+
+    if (source_output != target->output) {
+        struct wlr_box box = {0};
+
+        if (floating_default_box(group, &box)) {
+            group->floating_x = box.x;
+            group->floating_y = box.y;
+            group->floating_width = box.width;
+            group->floating_height = box.height;
+        }
+
+        if (group->pinned_output != target->output) {
+            group->pinned_output = NULL;
+        }
+    }
+
+    if (was_source_active) {
+        source->active_group =
+            find_last_group_in_workspace(
+                server,
+                source
+            );
+    }
+
+    if (!target->active_group) {
+        target->active_group = group;
+    }
+
+    if (was_server_active && !pin_follow) {
+        OnyrionGroup *fallback =
+            source->active_group;
+
+        server->active_group = fallback;
+
+        if (fallback && fallback->active) {
+            set_active_window(
+                fallback,
+                fallback->active
+            );
+        } else {
+            onyrion_input_focus_window(
+                server,
+                NULL
+            );
+        }
+    }
+
+    onyrion_group_apply_geometry(group);
+
+    return group->workspace == target;
+}
+
+bool onyrion_group_set_pinned_id(
+        struct onyrion_server *server,
+        uint64_t group_id,
+        bool pinned) {
+    OnyrionGroup *group =
+        onyrion_group_find_id(server, group_id);
+
+    if (!group ||
+            group->placement !=
+                ONYRION_GROUP_PLACEMENT_FLOATING ||
+            !group->workspace ||
+            !group->workspace->output) {
+        return false;
+    }
+
+    OnyrionOutput *output =
+        group->workspace->output;
+
+    group->pinned_output =
+        pinned ? output : NULL;
+
+    if (pinned &&
+            output->visible_workspace &&
+            output->visible_workspace !=
+                group->workspace) {
+        (void)move_floating_group_to_workspace(
+            group,
+            output->visible_workspace,
+            true
+        );
+    }
+
+    onyrion_shell_protocol_mark_changed(server);
+
+    wlr_log(
+        WLR_INFO,
+        "Group pin: group=%" PRIu64
+        " pinned=%u output=%s",
+        group->id,
+        (unsigned)pinned,
+        pinned && output->wlr_output &&
+                output->wlr_output->name
+            ? output->wlr_output->name
+            : "<none>"
+    );
+
+    return (group->pinned_output != NULL) == pinned;
+}
+
+void onyrion_group_follow_pinned_workspace(
+        struct onyrion_server *server,
+        struct onyrion_output *output,
+        struct onyrion_workspace *workspace) {
+    if (!server ||
+            !output ||
+            !workspace ||
+            workspace->output != output) {
+        return;
+    }
+
+    OnyrionGroup *group;
+    OnyrionGroup *tmp;
+
+    wl_list_for_each_safe(
+            group,
+            tmp,
+            &server->groups,
+            link) {
+        if (group->placement !=
+                    ONYRION_GROUP_PLACEMENT_FLOATING ||
+                group->pinned_output != output ||
+                group->workspace == workspace) {
+            continue;
+        }
+
+        (void)move_floating_group_to_workspace(
+            group,
+            workspace,
+            true
+        );
+    }
+}
+
+void onyrion_group_output_removed(
+        struct onyrion_server *server,
+        struct onyrion_output *output) {
+    if (!server || !output) {
+        return;
+    }
+
+    OnyrionGroup *group;
+
+    wl_list_for_each(
+            group,
+            &server->groups,
+            link) {
+        if (group->pinned_output == output) {
+            group->pinned_output = NULL;
+        }
+    }
+}
+
 bool onyrion_group_move_to_workspace_id(
         struct onyrion_server *server,
         uint64_t group_id,
         uint64_t workspace_id) {
     OnyrionGroup *group =
-        find_group_by_id(
+        onyrion_group_find_id(
             server,
             group_id
         );
@@ -1489,6 +2366,50 @@ bool onyrion_group_move_to_workspace_id(
             !target ||
             !target->output ||
             group->workspace == target) {
+        return false;
+    }
+
+    if (group->placement ==
+            ONYRION_GROUP_PLACEMENT_FLOATING) {
+        if (group->pinned_output) {
+            wlr_log(
+                WLR_DEBUG,
+                "Pinned Group move ignored: group=%" PRIu64
+                " workspace=%" PRIu64,
+                group_id,
+                workspace_id
+            );
+            return false;
+        }
+
+        const bool moved =
+            move_floating_group_to_workspace(
+                group,
+                target,
+                false
+            );
+
+        if (!moved) {
+            return false;
+        }
+
+        onyrion_shell_protocol_mark_changed(server);
+
+        wlr_log(
+            WLR_INFO,
+            "Floating Group moved to workspace:"
+            " group=%" PRIu64
+            " workspace=%" PRIu64,
+            group_id,
+            workspace_id
+        );
+
+        return true;
+    }
+
+    if (group->placement !=
+                ONYRION_GROUP_PLACEMENT_TILED ||
+            !group->tile) {
         return false;
     }
 
@@ -1530,8 +2451,7 @@ bool onyrion_group_move_to_workspace_id(
             window,
             &group->windows,
             group_link) {
-        window->workspace =
-            target;
+        window->workspace = target;
 
         if (target->scene_tree) {
             wlr_scene_node_reparent(
@@ -1539,6 +2459,11 @@ bool onyrion_group_move_to_workspace_id(
                 target->scene_tree
             );
         }
+
+        onyrion_window_move_transients_to_workspace(
+            window,
+            target
+        );
     }
 
     if (was_server_active) {
@@ -1623,6 +2548,11 @@ bool onyrion_group_move_window_to_workspace_id(
     onyrion_group_move_window(
         window,
         target_group
+    );
+
+    onyrion_window_move_transients_to_workspace(
+        window,
+        target_workspace
     );
 
     wlr_log(

@@ -9,26 +9,29 @@
 #include <gio/gdesktopappinfo.h>
 #include <gio/gio.h>
 #include <glib-unix.h>
+#include <glib/gstdio.h>
 #include <gtk/gtk.h>
 #include <gtk4-layer-shell.h>
-
-#define ONYRION_LAUNCHER_MAX_RESULTS 12
 
 typedef struct {
     GAppInfo *info;
     char *id;
     char *name;
     char *search_key;
+    guint64 launch_count;
 } LauncherApp;
 
 typedef struct {
     GtkWindow *window;
     GtkSearchEntry *search;
     GtkListBox *results;
+    GtkScrolledWindow *scroll;
     GPtrArray *apps;
     GMainLoop *loop;
     GSocketService *service;
     char *socket_path;
+    GKeyFile *usage;
+    char *usage_path;
 } Launcher;
 
 static void launcher_app_free(gpointer data)
@@ -50,8 +53,12 @@ static gint launcher_app_compare(gconstpointer a, gconstpointer b)
 {
     const LauncherApp *left = *(LauncherApp * const *)a;
     const LauncherApp *right = *(LauncherApp * const *)b;
-    int cmp = g_utf8_collate(left->name, right->name);
 
+    if (left->launch_count != right->launch_count) {
+        return left->launch_count > right->launch_count ? -1 : 1;
+    }
+
+    int cmp = g_utf8_collate(left->name, right->name);
     if (cmp != 0) {
         return cmp;
     }
@@ -59,7 +66,64 @@ static gint launcher_app_compare(gconstpointer a, gconstpointer b)
     return g_strcmp0(left->id, right->id);
 }
 
-static GPtrArray *launcher_load_apps(void)
+static char *launcher_usage_path(void)
+{
+    const char *state_home = g_getenv("XDG_STATE_HOME");
+    g_autofree char *fallback = NULL;
+
+    if (!state_home || !*state_home) {
+        const char *home = g_get_home_dir();
+        if (!home || !*home) {
+            return NULL;
+        }
+        fallback = g_build_filename(home, ".local", "state", NULL);
+        state_home = fallback;
+    }
+
+    g_autofree char *dir = g_build_filename(state_home, "onyrion", NULL);
+    if (!dir || (g_mkdir_with_parents(dir, 0700) != 0 && errno != EEXIST)) {
+        return NULL;
+    }
+
+    return g_build_filename(dir, "launcher-usage.ini", NULL);
+}
+
+static gboolean launcher_usage_save(Launcher *launcher)
+{
+    if (!launcher || !launcher->usage || !launcher->usage_path) {
+        return FALSE;
+    }
+
+    gsize length = 0;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *data = g_key_file_to_data(launcher->usage, &length, &error);
+    if (!data) {
+        fprintf(stderr, "LAUNCHER_USAGE_FAIL serialize=%s\n", error ? error->message : "unknown");
+        return FALSE;
+    }
+
+    g_autofree char *tmp = g_strdup_printf("%s.tmp.%ld", launcher->usage_path, (long)getpid());
+    if (!tmp || !g_file_set_contents(tmp, data, (gssize)length, &error)) {
+        fprintf(stderr, "LAUNCHER_USAGE_FAIL write=%s\n", error ? error->message : "unknown");
+        return FALSE;
+    }
+
+    if (g_chmod(tmp, 0600) != 0) {
+        fprintf(stderr, "LAUNCHER_USAGE_FAIL chmod=%s\n", strerror(errno));
+        (void)g_unlink(tmp);
+        return FALSE;
+    }
+
+    if (g_rename(tmp, launcher->usage_path) != 0) {
+        fprintf(stderr, "LAUNCHER_USAGE_FAIL rename=%s\n", strerror(errno));
+        (void)g_unlink(tmp);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static GPtrArray *launcher_load_apps(GKeyFile *usage)
 {
     GPtrArray *apps =
         g_ptr_array_new_with_free_func(launcher_app_free);
@@ -71,8 +135,13 @@ static GPtrArray *launcher_load_apps(void)
         const char *name;
         LauncherApp *app;
 
-        if (!G_IS_DESKTOP_APP_INFO(info) ||
-            !g_app_info_should_show(info)) {
+        if (!G_IS_DESKTOP_APP_INFO(info)) {
+            continue;
+        }
+
+        GDesktopAppInfo *desktop = G_DESKTOP_APP_INFO(info);
+        if (g_desktop_app_info_get_boolean(desktop, "NoDisplay") ||
+            g_desktop_app_info_get_boolean(desktop, "Hidden")) {
             continue;
         }
 
@@ -87,6 +156,20 @@ static GPtrArray *launcher_load_apps(void)
         app->info = g_object_ref(info);
         app->id = g_strdup(id);
         app->name = g_strdup(name);
+
+        if (usage) {
+            g_autoptr(GError) count_error = NULL;
+            app->launch_count = g_key_file_get_uint64(
+                usage,
+                "launch-count",
+                id,
+                &count_error
+            );
+            if (count_error) {
+                g_clear_error(&count_error);
+                app->launch_count = 0;
+            }
+        }
 
         char *joined = g_strdup_printf("%s\n%s", name, id);
         app->search_key = g_utf8_casefold(joined, -1);
@@ -145,6 +228,21 @@ static void launcher_select_index(
         row
     );
 
+    if (launcher->scroll) {
+        graphene_rect_t bounds = GRAPHENE_RECT_INIT(0, 0, 0, 0);
+        if (gtk_widget_compute_bounds(
+                GTK_WIDGET(row),
+                GTK_WIDGET(launcher->results),
+                &bounds)) {
+            GtkAdjustment *adjustment =
+                gtk_scrolled_window_get_vadjustment(launcher->scroll);
+            const double top = bounds.origin.y;
+            const double bottom = bounds.origin.y + bounds.size.height;
+
+            gtk_adjustment_clamp_page(adjustment, top, bottom);
+        }
+    }
+
     gtk_widget_grab_focus(
         GTK_WIDGET(launcher->search)
     );
@@ -161,8 +259,7 @@ static guint launcher_rebuild_results(
     launcher_clear_results(launcher);
 
     for (guint i = 0;
-         i < launcher->apps->len &&
-         count < ONYRION_LAUNCHER_MAX_RESULTS;
+         i < launcher->apps->len;
          i++) {
         LauncherApp *app =
             g_ptr_array_index(launcher->apps, i);
@@ -296,6 +393,13 @@ static gboolean launcher_focus_search(gpointer data)
 
 static void launcher_show(Launcher *launcher)
 {
+    GPtrArray *fresh_apps =
+        launcher_load_apps(launcher->usage);
+    if (fresh_apps) {
+        g_clear_pointer(&launcher->apps, g_ptr_array_unref);
+        launcher->apps = fresh_apps;
+    }
+
     gtk_editable_set_text(
         GTK_EDITABLE(launcher->search),
         ""
@@ -356,10 +460,25 @@ static gboolean launcher_launch_app(
         return FALSE;
     }
 
+    if (app->launch_count < G_MAXUINT64) {
+        app->launch_count++;
+    }
+    if (launcher->usage) {
+        g_key_file_set_uint64(
+            launcher->usage,
+            "launch-count",
+            app->id,
+            app->launch_count
+        );
+        (void)launcher_usage_save(launcher);
+    }
+    g_ptr_array_sort(launcher->apps, launcher_app_compare);
+
     printf(
-        "LAUNCHER_APP id=%s name=%s\n",
+        "LAUNCHER_APP id=%s name=%s count=%" G_GUINT64_FORMAT "\n",
         app->id,
-        app->name
+        app->name,
+        app->launch_count
     );
 
     launcher_hide(
@@ -659,6 +778,7 @@ static gboolean launcher_build_window(
     );
 
     scroll = gtk_scrolled_window_new();
+    launcher->scroll = GTK_SCROLLED_WINDOW(scroll);
 
     gtk_widget_set_vexpand(
         scroll,
@@ -994,8 +1114,29 @@ static int launcher_daemon(void)
 
     gtk_init();
 
+    launcher.usage_path = launcher_usage_path();
+    launcher.usage = g_key_file_new();
+    if (launcher.usage_path) {
+        g_autoptr(GError) usage_error = NULL;
+        if (!g_key_file_load_from_file(
+                launcher.usage,
+                launcher.usage_path,
+                G_KEY_FILE_NONE,
+                &usage_error) &&
+                !g_error_matches(
+                    usage_error,
+                    G_FILE_ERROR,
+                    G_FILE_ERROR_NOENT)) {
+            fprintf(
+                stderr,
+                "LAUNCHER_USAGE_WARN load=%s\n",
+                usage_error ? usage_error->message : "unknown"
+            );
+        }
+    }
+
     launcher.apps =
-        launcher_load_apps();
+        launcher_load_apps(launcher.usage);
 
     launcher.loop =
         g_main_loop_new(
@@ -1008,6 +1149,8 @@ static int launcher_daemon(void)
         g_ptr_array_unref(launcher.apps);
         g_main_loop_unref(launcher.loop);
         g_free(launcher.socket_path);
+        g_clear_pointer(&launcher.usage, g_key_file_unref);
+        g_free(launcher.usage_path);
         return 19;
     }
 
@@ -1097,6 +1240,8 @@ static int launcher_daemon(void)
     g_main_loop_unref(launcher.loop);
     unlink(launcher.socket_path);
     g_free(launcher.socket_path);
+    g_clear_pointer(&launcher.usage, g_key_file_unref);
+    g_free(launcher.usage_path);
 
     printf("LAUNCHER_DAEMON_STOP\n");
 

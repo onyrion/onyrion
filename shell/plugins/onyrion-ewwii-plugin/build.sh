@@ -8,8 +8,14 @@ fi
 
 cargo_bin=$1
 manifest=$2
-target_dir=$3
+requested_target_dir=$3
 output=$4
+
+# Meson supplies an isolated build-local target by default. For development,
+# allow the standard Cargo target-dir environment contract to opt into a
+# persistent cache without hardcoding a user-specific path in project source.
+target_dir=${CARGO_TARGET_DIR:-$requested_target_dir}
+printf 'ONYRION_PLUGIN_CARGO_TARGET_DIR=%s\n' "$target_dir" >&2
 
 # Cargo/libgit2 can fail against the same repository that system git fetches
 # correctly. Keep the checked-in git dependency exact, but use the verified

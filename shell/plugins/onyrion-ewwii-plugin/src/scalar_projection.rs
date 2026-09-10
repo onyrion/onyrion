@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 use ewwii_plugin_api::{EwwiiAPI, NativeFn, NativeFnExt, NbclType, PluginValue};
 use serde_json::Value;
 
+use crate::bar_renderer;
+
 #[derive(Debug, Default)]
 struct CachedJson {
     raw: Option<String>,
@@ -67,6 +69,7 @@ fn value_to_string(value: &Value) -> String {
 
 pub fn init(host: Arc<dyn EwwiiAPI>) {
     let cache = Arc::new(Mutex::new(ScalarProjectionCache::default()));
+    let bar_host = host.clone();
 
     host.register_function(
         "onyrion_scalar_project",
@@ -82,6 +85,10 @@ pub fn init(host: Arc<dyn EwwiiAPI>) {
             let PluginValue::String(ref raw) = args[2] else {
                 unreachable!("onyrion_scalar_project raw requires String")
             };
+
+            if scope == "bar" && field == "ingest" {
+                return Ok(PluginValue::String(bar_renderer::ingest(bar_host.clone(), raw)));
+            }
 
             let projected = cache
                 .lock()

@@ -12,9 +12,17 @@ enum {
     UI_ACTIONS_MAX_OUTPUTS = 8,
 };
 
+typedef enum ui_actions_scope {
+    UI_ACTIONS_SCOPE_ACTIVE = 0,
+    UI_ACTIONS_SCOPE_WINDOW,
+    UI_ACTIONS_SCOPE_GROUP,
+} UiActionsScope;
+
 typedef struct ui_actions_runtime {
     char *config_dir;
     GHashTable *parent_by_widget;
+    UiActionsScope context_scope[UI_ACTIONS_MAX_OUTPUTS];
+    char *context_subject_id[UI_ACTIONS_MAX_OUTPUTS];
 } UiActionsRuntime;
 
 static UiActionsRuntime runtime = {0};
@@ -66,6 +74,13 @@ static bool ensure_runtime(
 
     if (runtime.parent_by_widget) {
         g_hash_table_unref(runtime.parent_by_widget);
+    }
+
+    for (guint i = 0; i < UI_ACTIONS_MAX_OUTPUTS; i++) {
+        g_clear_pointer(
+            &runtime.context_subject_id[i],
+            g_free
+        );
     }
 
     runtime = (UiActionsRuntime){0};
@@ -277,6 +292,283 @@ static bool ewwii_window_active(
     return success;
 }
 
+static bool ewwii_active_windows_capture(
+        const char *config_dir,
+        char **active_windows) {
+    const char *argv[] = {
+        "ewwii",
+        "--config",
+        config_dir,
+        "active-windows",
+        NULL,
+    };
+    char *captured_stdout = NULL;
+    char *captured_stderr = NULL;
+    int wait_status = 0;
+    GError *error = NULL;
+
+    const bool spawned =
+        g_spawn_sync(
+            NULL,
+            (char **)argv,
+            NULL,
+            G_SPAWN_SEARCH_PATH,
+            NULL,
+            NULL,
+            &captured_stdout,
+            &captured_stderr,
+            &wait_status,
+            &error
+        );
+
+    bool success = spawned;
+
+    if (success) {
+        GError *wait_error = NULL;
+        success =
+            g_spawn_check_wait_status(
+                wait_status,
+                &wait_error
+            );
+
+        if (!success) {
+            fprintf(
+                stderr,
+                "FAIL: ewwii active-windows status: %s\n",
+                wait_error
+                    ? wait_error->message
+                    : "unknown"
+            );
+        }
+
+        g_clear_error(&wait_error);
+    } else {
+        fprintf(
+            stderr,
+            "FAIL: cannot query Ewwii active windows: %s\n",
+            error ? error->message : "unknown"
+        );
+    }
+
+    if (!success &&
+            captured_stderr &&
+            captured_stderr[0] != '\0') {
+        fputs(captured_stderr, stderr);
+    }
+
+    g_free(captured_stderr);
+    g_clear_error(&error);
+
+    if (!success) {
+        g_free(captured_stdout);
+        return false;
+    }
+
+    *active_windows =
+        captured_stdout
+            ? captured_stdout
+            : g_strdup("");
+
+    return *active_windows != NULL;
+}
+
+static bool active_windows_contains(
+        const char *active_windows,
+        const char *window_name) {
+    if (!active_windows || !window_name) {
+        return false;
+    }
+
+    g_autofree char *prefix =
+        g_strdup_printf(
+            "%s:",
+            window_name
+        );
+
+    if (!prefix) {
+        return false;
+    }
+
+    g_auto(GStrv) lines =
+        g_strsplit(
+            active_windows,
+            "\n",
+            -1
+        );
+
+    for (size_t i = 0;
+            lines && lines[i];
+            i++) {
+        if (g_str_has_prefix(
+                lines[i],
+                prefix)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool close_ewwii_window_if_active(
+        const char *config_dir,
+        const char *active_windows,
+        const char *window_name) {
+    if (!active_windows_contains(
+            active_windows,
+            window_name)) {
+        return true;
+    }
+
+    const char *args[] = {
+        "close",
+        window_name,
+        NULL,
+    };
+
+    return ewwii_run(
+        config_dir,
+        args,
+        false
+    );
+}
+
+static bool launcher_close_transient(void) {
+    const char *launcher =
+        g_getenv("ONYRION_LAUNCHER_BIN");
+
+    if (!launcher || launcher[0] == '\0') {
+        launcher =
+            "/usr/libexec/onyrion/onyrion-launcher";
+    }
+
+    const char *argv[] = {
+        launcher,
+        "close",
+        NULL,
+    };
+    int wait_status = 0;
+    GError *error = NULL;
+
+    const bool spawned =
+        g_spawn_sync(
+            NULL,
+            (char **)argv,
+            NULL,
+            0,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            &wait_status,
+            &error
+        );
+
+    bool success = spawned;
+
+    if (success) {
+        GError *wait_error = NULL;
+        success =
+            g_spawn_check_wait_status(
+                wait_status,
+                &wait_error
+            );
+
+        if (!success) {
+            fprintf(
+                stderr,
+                "FAIL: launcher close status: %s\n",
+                wait_error
+                    ? wait_error->message
+                    : "unknown"
+            );
+        }
+
+        g_clear_error(&wait_error);
+    } else {
+        fprintf(
+            stderr,
+            "FAIL: cannot close launcher: %s\n",
+            error ? error->message : "unknown"
+        );
+    }
+
+    g_clear_error(&error);
+    return success;
+}
+
+bool ui_actions_v11_dismiss_transients(
+        const char *config_dir) {
+    if (!config_dir || config_dir[0] == '\0') {
+        return false;
+    }
+
+    bool success = launcher_close_transient();
+    g_autofree char *active_windows = NULL;
+
+    if (!ewwii_active_windows_capture(
+            config_dir,
+            &active_windows)) {
+        return false;
+    }
+
+    static const char *shared_windows[] = {
+        "onyrion-powermenu",
+        "onyrion-audio-mixer",
+        "onyrion-wifi-networks",
+        "onyrion-bluetooth-devices",
+        NULL,
+    };
+
+    for (size_t i = 0;
+            shared_windows[i];
+            i++) {
+        if (!close_ewwii_window_if_active(
+                config_dir,
+                active_windows,
+                shared_windows[i])) {
+            success = false;
+        }
+    }
+
+    for (guint output = 0;
+            output < 8U;
+            output++) {
+        static const char *prefixes[] = {
+            "onyrion-actions-menu",
+            "onyrion-quicksettings",
+            "onyrion-calendar",
+            NULL,
+        };
+
+        for (size_t i = 0;
+                prefixes[i];
+                i++) {
+            g_autofree char *window_name =
+                g_strdup_printf(
+                    "%s-%u",
+                    prefixes[i],
+                    output
+                );
+
+            if (!window_name ||
+                    !close_ewwii_window_if_active(
+                        config_dir,
+                        active_windows,
+                        window_name)) {
+                success = false;
+            }
+        }
+    }
+
+    fprintf(
+        stderr,
+        "TRANSIENT UI dismiss result=%s\n",
+        success ? "yes" : "no"
+    );
+
+    return success;
+}
+
 static char *nbcl_quote(
         const char *value) {
     g_autofree char *escaped =
@@ -315,6 +607,38 @@ static bool widget_update_label(
     g_autofree char *property =
         quoted
             ? g_strdup_printf("label=%s", quoted)
+            : NULL;
+
+    if (!property) {
+        return false;
+    }
+
+    const char *args[] = {
+        "widget-control",
+        "property-update",
+        "--widget",
+        name,
+        property,
+        NULL,
+    };
+
+    return ewwii_run(
+        config_dir,
+        args,
+        quiet_failure
+    );
+}
+
+static bool widget_update_class(
+        const char *config_dir,
+        const char *name,
+        const char *class_name,
+        bool quiet_failure) {
+    g_autofree char *quoted =
+        nbcl_quote(class_name);
+    g_autofree char *property =
+        quoted
+            ? g_strdup_printf("class=%s", quoted)
             : NULL;
 
     if (!property) {
@@ -544,6 +868,125 @@ static bool required_boolean(
         );
 
     return true;
+}
+
+static JsonObject *find_object_by_id(
+        JsonArray *array,
+        const char *id) {
+    if (!array ||
+            !positive_decimal_id(id, NULL)) {
+        return NULL;
+    }
+
+    for (guint i = 0;
+            i < json_array_get_length(array);
+            i++) {
+        JsonObject *object =
+            array_object(array, i);
+        const char *candidate_id =
+            required_string(object, "id");
+
+        if (candidate_id &&
+                strcmp(candidate_id, id) == 0) {
+            return object;
+        }
+    }
+
+    return NULL;
+}
+
+static void clear_context_subject(
+        guint output_index) {
+    if (output_index >= UI_ACTIONS_MAX_OUTPUTS) {
+        return;
+    }
+
+    runtime.context_scope[output_index] =
+        UI_ACTIONS_SCOPE_ACTIVE;
+    g_clear_pointer(
+        &runtime.context_subject_id[output_index],
+        g_free
+    );
+}
+
+static bool set_context_subject(
+        guint output_index,
+        UiActionsScope scope,
+        const char *subject_id) {
+    if (output_index >= UI_ACTIONS_MAX_OUTPUTS ||
+            scope == UI_ACTIONS_SCOPE_ACTIVE ||
+            !positive_decimal_id(subject_id, NULL)) {
+        return false;
+    }
+
+    g_autofree char *copy =
+        g_strdup(subject_id);
+
+    if (!copy) {
+        return false;
+    }
+
+    clear_context_subject(output_index);
+    runtime.context_scope[output_index] = scope;
+    runtime.context_subject_id[output_index] =
+        g_steal_pointer(&copy);
+
+    return true;
+}
+
+static bool open_context_menu(
+        const char *config_dir,
+        guint output_index) {
+    if (output_index >= UI_ACTIONS_MAX_OUTPUTS) {
+        return false;
+    }
+
+    for (guint i = 0;
+            i < UI_ACTIONS_MAX_OUTPUTS;
+            i++) {
+        g_autofree char *name =
+            g_strdup_printf(
+                "onyrion-actions-menu-%u",
+                i
+            );
+        const char *close_args[] = {
+            "close",
+            name,
+            NULL,
+        };
+
+        if (!name) {
+            return false;
+        }
+
+        (void)ewwii_run(
+            config_dir,
+            close_args,
+            true
+        );
+
+        if (i != output_index) {
+            clear_context_subject(i);
+        }
+    }
+
+    g_autofree char *menu_window =
+        g_strdup_printf(
+            "onyrion-actions-menu-%u",
+            output_index
+        );
+    const char *open_args[] = {
+        "open",
+        menu_window,
+        NULL,
+    };
+
+    return menu_window &&
+        ewwii_run(
+            config_dir,
+            open_args,
+            false
+        );
 }
 
 static gint compare_object_id(
@@ -825,7 +1268,9 @@ static bool sync_output_actions(
         JsonArray *workspaces,
         JsonArray *groups,
         JsonArray *windows,
-        GHashTable *desired) {
+        GHashTable *desired,
+        UiActionsScope scope,
+        const char *subject_id) {
     g_autofree char *menu_window =
         g_strdup_printf(
             "onyrion-actions-menu-%u",
@@ -842,69 +1287,162 @@ static bool sync_output_actions(
     }
 
     if (!menu_active) {
+        clear_context_subject(output_index);
         return true;
     }
 
-    if (!sync_visible_floating_tile_actions(
-            config_dir,
-            output_index,
-            visible_workspace_id,
-            windows,
-            desired)) {
-        return false;
-    }
-
-    JsonObject *active_group =
-        find_active_group(
-            groups,
-            visible_workspace_id
-        );
-
-    const char *group_id =
-        active_group
-            ? required_string(
-                active_group,
-                "id"
-            )
-            : NULL;
-
-    JsonObject *active_window =
-        group_id
-            ? find_group_active_window(
+    if (scope == UI_ACTIONS_SCOPE_ACTIVE &&
+            !sync_visible_floating_tile_actions(
+                config_dir,
+                output_index,
+                visible_workspace_id,
                 windows,
-                group_id
-            )
-            : NULL;
-
-
-    if (!active_window) {
-        return true;
+                desired)) {
+        return false;
     }
 
-    const char *window_id =
-        required_string(
-            active_window,
-            "id"
-        );
-    const char *window_workspace =
-        required_string(
-            active_window,
-            "workspace_id"
-        );
-    const char *placement =
-        required_string(
-            active_window,
-            "placement"
-        );
+    JsonObject *active_group = NULL;
+    JsonObject *active_window = NULL;
+    const char *group_id = NULL;
+    const char *window_id = NULL;
+    const char *window_workspace = NULL;
+    const char *placement = NULL;
 
-    if (!window_id ||
-            !window_workspace ||
-            !placement ||
-            !positive_decimal_id(window_id, NULL) ||
-            !positive_decimal_id(window_workspace, NULL) ||
-            (group_id &&
-                !positive_decimal_id(group_id, NULL))) {
-        return false;
+    if (scope == UI_ACTIONS_SCOPE_GROUP) {
+        active_group =
+            find_object_by_id(
+                groups,
+                subject_id
+            );
+
+        group_id =
+            active_group
+                ? required_string(
+                    active_group,
+                    "id"
+                )
+                : NULL;
+        window_workspace =
+            active_group
+                ? required_string(
+                    active_group,
+                    "workspace_id"
+                )
+                : NULL;
+    } else if (scope == UI_ACTIONS_SCOPE_WINDOW) {
+        active_window =
+            find_object_by_id(
+                windows,
+                subject_id
+            );
+
+        if (active_window) {
+            window_id =
+                required_string(
+                    active_window,
+                    "id"
+                );
+            window_workspace =
+                required_string(
+                    active_window,
+                    "workspace_id"
+                );
+            placement =
+                required_string(
+                    active_window,
+                    "placement"
+                );
+
+            const char *candidate_group_id =
+                required_string(
+                    active_window,
+                    "group_id"
+                );
+
+            group_id =
+                candidate_group_id &&
+                candidate_group_id[0] != '\0'
+                    ? candidate_group_id
+                    : NULL;
+        }
+    } else {
+        active_group =
+            find_active_group(
+                groups,
+                visible_workspace_id
+            );
+
+        group_id =
+            active_group
+                ? required_string(
+                    active_group,
+                    "id"
+                )
+                : NULL;
+
+        active_window =
+            group_id
+                ? find_group_active_window(
+                    windows,
+                    group_id
+                )
+                : NULL;
+
+        if (active_window) {
+            window_id =
+                required_string(
+                    active_window,
+                    "id"
+                );
+            window_workspace =
+                required_string(
+                    active_window,
+                    "workspace_id"
+                );
+            placement =
+                required_string(
+                    active_window,
+                    "placement"
+                );
+        }
+    }
+
+    if (scope == UI_ACTIONS_SCOPE_GROUP) {
+        if (!group_id ||
+                !window_workspace ||
+                !positive_decimal_id(group_id, NULL) ||
+                !positive_decimal_id(
+                    window_workspace,
+                    NULL) ||
+                strcmp(
+                    window_workspace,
+                    visible_workspace_id
+                ) != 0) {
+            return false;
+        }
+    } else {
+        if (!active_window) {
+            return true;
+        }
+
+        if (!window_id ||
+                !window_workspace ||
+                !placement ||
+                !positive_decimal_id(window_id, NULL) ||
+                !positive_decimal_id(
+                    window_workspace,
+                    NULL) ||
+                (group_id &&
+                    !positive_decimal_id(
+                        group_id,
+                        NULL)) ||
+                (scope == UI_ACTIONS_SCOPE_WINDOW &&
+                    strcmp(
+                        window_workspace,
+                        visible_workspace_id
+                    ) != 0)) {
+            return false;
+        }
     }
 
     g_autofree char *parent =
@@ -917,137 +1455,163 @@ static bool sync_output_actions(
         return false;
     }
 
-    g_autofree char *close_name =
-        g_strdup_printf(
-            "onyrion-action-close-w%s",
-            window_id
-        );
-    g_autofree char *close_cmd =
-        g_strdup_printf(
-            "onyrionctl window focus %s && onyrionctl window close",
-            window_id
-        );
-    g_autofree char *fullscreen_name =
-        g_strdup_printf(
-            "onyrion-action-fullscreen-w%s",
-            window_id
-        );
-    g_autofree char *fullscreen_cmd =
-        g_strdup_printf(
-            "onyrionctl window focus %s && onyrionctl window fullscreen",
-            window_id
-        );
-
-    if (!close_name ||
-            !close_cmd ||
-            !fullscreen_name ||
-            !fullscreen_cmd ||
-            !create_action(
-                config_dir,
-                parent,
-                desired,
-                close_name,
-                "Close",
-                close_cmd) ||
-            !create_action(
-                config_dir,
-                parent,
-                desired,
-                fullscreen_name,
-                "Fullscreen",
-                fullscreen_cmd)) {
-        return false;
-    }
-
-    if (strcmp(placement, "tiled") == 0) {
-        g_autofree char *float_name =
+    if (scope != UI_ACTIONS_SCOPE_GROUP) {
+        g_autofree char *close_name =
             g_strdup_printf(
-                "onyrion-action-float-w%s",
+                "onyrion-action-close-w%s",
                 window_id
             );
-        g_autofree char *float_cmd =
+        g_autofree char *close_cmd =
             g_strdup_printf(
-                "onyrionctl window float %s",
+                "onyrionctl window focus %s && onyrionctl window close",
                 window_id
             );
+        g_autofree char *fullscreen_name =
+            g_strdup_printf(
+                "onyrion-action-fullscreen-w%s",
+                window_id
+            );
+        g_autofree char *fullscreen_cmd =
+            g_strdup_printf(
+                "onyrionctl window focus %s && onyrionctl window fullscreen",
+                window_id
+            );
+        const char *close_label =
+            scope == UI_ACTIONS_SCOPE_WINDOW
+                ? "Close"
+                : "Close";
+        const char *fullscreen_label =
+            scope == UI_ACTIONS_SCOPE_WINDOW
+                ? "Fullscreen"
+                : "Fullscreen";
 
-        if (!float_name ||
-                !float_cmd ||
+        if (!close_name ||
+                !close_cmd ||
+                !fullscreen_name ||
+                !fullscreen_cmd ||
                 !create_action(
                     config_dir,
                     parent,
                     desired,
-                    float_name,
-                    "Float",
-                    float_cmd)) {
+                    close_name,
+                    close_label,
+                    close_cmd) ||
+                !create_action(
+                    config_dir,
+                    parent,
+                    desired,
+                    fullscreen_name,
+                    fullscreen_label,
+                    fullscreen_cmd)) {
             return false;
         }
 
-        if (group_id) {
-            g_autofree char *split_h_name =
+        if (strcmp(placement, "tiled") == 0) {
+            g_autofree char *float_name =
                 g_strdup_printf(
-                    "onyrion-action-split-h-w%s",
+                    "onyrion-action-float-w%s",
                     window_id
                 );
-            g_autofree char *split_h_cmd =
+            g_autofree char *float_cmd =
                 g_strdup_printf(
-                    "onyrionctl window split %s horizontal",
+                    "onyrionctl window float %s",
                     window_id
                 );
-            g_autofree char *split_v_name =
-                g_strdup_printf(
-                    "onyrion-action-split-v-w%s",
-                    window_id
-                );
-            g_autofree char *split_v_cmd =
-                g_strdup_printf(
-                    "onyrionctl window split %s vertical",
-                    window_id
-                );
+            const char *float_label =
+                scope == UI_ACTIONS_SCOPE_WINDOW
+                    ? "Float"
+                    : "Float";
 
-            if (!split_h_name ||
-                    !split_h_cmd ||
-                    !split_v_name ||
-                    !split_v_cmd ||
+            if (!float_name ||
+                    !float_cmd ||
                     !create_action(
                         config_dir,
                         parent,
                         desired,
-                        split_h_name,
-                        "Split H",
-                        split_h_cmd) ||
-                    !create_action(
-                        config_dir,
-                        parent,
-                        desired,
-                        split_v_name,
-                        "Split V",
-                        split_v_cmd)) {
+                        float_name,
+                        float_label,
+                        float_cmd)) {
                 return false;
             }
-        }
-    } else if (strcmp(placement, "floating") == 0) {
-        g_autofree char *tile_name =
-            g_strdup_printf(
-                "onyrion-action-tile-w%s",
-                window_id
-            );
-        g_autofree char *tile_cmd =
-            g_strdup_printf(
-                "onyrionctl window tile %s",
-                window_id
-            );
 
-        if (!tile_name ||
-                !tile_cmd ||
-                !create_action(
-                    config_dir,
-                    parent,
-                    desired,
-                    tile_name,
-                    "Tile",
-                    tile_cmd)) {
-            return false;
+            if (group_id) {
+                g_autofree char *split_h_name =
+                    g_strdup_printf(
+                        "onyrion-action-split-h-w%s",
+                        window_id
+                    );
+                g_autofree char *split_h_cmd =
+                    g_strdup_printf(
+                        "onyrionctl window split %s horizontal",
+                        window_id
+                    );
+                g_autofree char *split_v_name =
+                    g_strdup_printf(
+                        "onyrion-action-split-v-w%s",
+                        window_id
+                    );
+                g_autofree char *split_v_cmd =
+                    g_strdup_printf(
+                        "onyrionctl window split %s vertical",
+                        window_id
+                    );
+                const char *split_h_label =
+                    scope == UI_ACTIONS_SCOPE_WINDOW
+                        ? "Split H"
+                        : "Split H";
+                const char *split_v_label =
+                    scope == UI_ACTIONS_SCOPE_WINDOW
+                        ? "Split V"
+                        : "Split V";
+
+                if (!split_h_name ||
+                        !split_h_cmd ||
+                        !split_v_name ||
+                        !split_v_cmd ||
+                        !create_action(
+                            config_dir,
+                            parent,
+                            desired,
+                            split_h_name,
+                            split_h_label,
+                            split_h_cmd) ||
+                        !create_action(
+                            config_dir,
+                            parent,
+                            desired,
+                            split_v_name,
+                            split_v_label,
+                            split_v_cmd)) {
+                    return false;
+                }
+            }
+        } else if (strcmp(placement, "floating") == 0) {
+            g_autofree char *tile_name =
+                g_strdup_printf(
+                    "onyrion-action-tile-w%s",
+                    window_id
+                );
+            g_autofree char *tile_cmd =
+                g_strdup_printf(
+                    "onyrionctl window tile %s",
+                    window_id
+                );
+            const char *tile_label =
+                scope == UI_ACTIONS_SCOPE_WINDOW
+                    ? "Tile"
+                    : "Tile";
+
+            if (!tile_name ||
+                    !tile_cmd ||
+                    !create_action(
+                        config_dir,
+                        parent,
+                        desired,
+                        tile_name,
+                        tile_label,
+                        tile_cmd)) {
+                return false;
+            }
         }
     }
 
@@ -1121,69 +1685,44 @@ static bool sync_output_actions(
             continue;
         }
 
-        g_autofree char *window_move_name =
-            g_strdup_printf(
-                "onyrion-action-window-w%s-to-ws%s",
-                window_id,
-                target_workspace
-            );
-        g_autofree char *window_move_label =
-            g_strdup_printf(
-                "W>%u",
-                ordinal
-            );
-        g_autofree char *window_move_cmd =
-            g_strdup_printf(
-                "onyrionctl window move-to-workspace %s %s",
-                window_id,
-                target_workspace
-            );
-
-        if (!window_move_name ||
-                !window_move_label ||
-                !window_move_cmd ||
-                !create_action(
-                    config_dir,
-                    parent,
-                    desired,
-                    window_move_name,
-                    window_move_label,
-                    window_move_cmd)) {
-            return false;
-        }
-
-        if (group_id) {
-            g_autofree char *group_move_name =
+        if (scope == UI_ACTIONS_SCOPE_ACTIVE) {
+            g_autofree char *window_move_name =
                 g_strdup_printf(
-                    "onyrion-action-group-g%s-to-ws%s",
-                    group_id,
+                    "onyrion-action-window-w%s-to-ws%s",
+                    window_id,
                     target_workspace
                 );
-            g_autofree char *group_move_label =
+            g_autofree char *window_move_label =
                 g_strdup_printf(
-                    "G>%u",
+                    scope == UI_ACTIONS_SCOPE_WINDOW
+                        ? "W>%u"
+                        : "W>%u",
                     ordinal
                 );
-            g_autofree char *group_move_cmd =
+            g_autofree char *window_move_cmd =
                 g_strdup_printf(
-                    "onyrionctl group move-to-workspace %s %s",
-                    group_id,
+                    "onyrionctl window move-to-workspace %s %s",
+                    window_id,
                     target_workspace
                 );
 
-            if (!group_move_name ||
-                    !group_move_label ||
-                    !group_move_cmd ||
+            if (!window_move_name ||
+                    !window_move_label ||
+                    !window_move_cmd ||
                     !create_action(
                         config_dir,
                         parent,
                         desired,
-                        group_move_name,
-                        group_move_label,
-                        group_move_cmd)) {
+                        window_move_name,
+                        window_move_label,
+                        window_move_cmd)) {
                 return false;
             }
         }
+
+        /* Whole-group workspace target expansion intentionally omitted.
+         * Group movement between workspaces is not a context-menu primitive. */
+
     }
 
     for (guint i = 0;
@@ -1219,38 +1758,43 @@ static bool sync_output_actions(
             continue;
         }
 
-        g_autofree char *window_group_name =
-            g_strdup_printf(
-                "onyrion-action-window-w%s-to-g%s",
-                window_id,
-                target_group_id
-            );
-        g_autofree char *window_group_label =
-            g_strdup_printf(
-                "W>G%s",
-                target_group_id
-            );
-        g_autofree char *window_group_cmd =
-            g_strdup_printf(
-                "onyrionctl window move-to-group %s %s",
-                window_id,
-                target_group_id
-            );
+        if (scope == UI_ACTIONS_SCOPE_ACTIVE) {
+            g_autofree char *window_group_name =
+                g_strdup_printf(
+                    "onyrion-action-window-w%s-to-g%s",
+                    window_id,
+                    target_group_id
+                );
+            g_autofree char *window_group_label =
+                g_strdup_printf(
+                    scope == UI_ACTIONS_SCOPE_WINDOW
+                        ? "W>G%s"
+                        : "W>G%s",
+                    target_group_id
+                );
+            g_autofree char *window_group_cmd =
+                g_strdup_printf(
+                    "onyrionctl window move-to-group %s %s",
+                    window_id,
+                    target_group_id
+                );
 
-        if (!window_group_name ||
-                !window_group_label ||
-                !window_group_cmd ||
-                !create_action(
-                    config_dir,
-                    parent,
-                    desired,
-                    window_group_name,
-                    window_group_label,
-                    window_group_cmd)) {
-            return false;
+            if (!window_group_name ||
+                    !window_group_label ||
+                    !window_group_cmd ||
+                    !create_action(
+                        config_dir,
+                        parent,
+                        desired,
+                        window_group_name,
+                        window_group_label,
+                        window_group_cmd)) {
+                return false;
+            }
         }
 
-        if (group_id) {
+        if (scope == UI_ACTIONS_SCOPE_ACTIVE &&
+                group_id) {
             g_autofree char *merge_name =
                 g_strdup_printf(
                     "onyrion-action-merge-g%s-to-g%s",
@@ -1259,7 +1803,9 @@ static bool sync_output_actions(
                 );
             g_autofree char *merge_label =
                 g_strdup_printf(
-                    "Merge>G%s",
+                    scope == UI_ACTIONS_SCOPE_GROUP
+                        ? "Merge group>G%s"
+                        : "Merge>G%s",
                     target_group_id
                 );
             g_autofree char *merge_cmd =
@@ -1282,6 +1828,214 @@ static bool sync_output_actions(
                 return false;
             }
         }
+    }
+
+    return true;
+}
+
+
+bool ui_actions_v11_context_open(
+        const char *config_dir,
+        const char *json,
+        const char *subject_kind,
+        const char *subject_id) {
+    if (!config_dir ||
+            config_dir[0] == '\0' ||
+            !json ||
+            !subject_kind ||
+            !positive_decimal_id(subject_id, NULL) ||
+            !ensure_runtime(config_dir)) {
+        return false;
+    }
+
+    /* One RMB gesture owns the context menu until it closes. Repeated RMB
+     * presses must not tear down/rebuild the current popup. */
+    for (guint i = 0; i < UI_ACTIONS_MAX_OUTPUTS; i++) {
+        g_autofree char *menu_name =
+            g_strdup_printf("onyrion-actions-menu-%u", i);
+        bool active = false;
+        if (!menu_name ||
+                !ewwii_window_active(config_dir, menu_name, &active)) {
+            return false;
+        }
+        if (active) {
+            return true;
+        }
+    }
+
+    UiActionsScope scope = UI_ACTIONS_SCOPE_ACTIVE;
+
+    if (strcmp(subject_kind, "window") == 0) {
+        scope = UI_ACTIONS_SCOPE_WINDOW;
+    } else if (strcmp(subject_kind, "group") == 0) {
+        scope = UI_ACTIONS_SCOPE_GROUP;
+    } else {
+        return false;
+    }
+
+    g_autoptr(JsonParser) parser =
+        json_parser_new();
+    GError *error = NULL;
+
+    if (!json_parser_load_from_data(
+            parser,
+            json,
+            -1,
+            &error)) {
+        fprintf(
+            stderr,
+            "FAIL: v11 context action JSON: %s\n",
+            error
+                ? error->message
+                : "parse error"
+        );
+        g_clear_error(&error);
+        return false;
+    }
+
+    JsonNode *root =
+        json_parser_get_root(parser);
+
+    if (!root ||
+            !JSON_NODE_HOLDS_OBJECT(root)) {
+        return false;
+    }
+
+    JsonObject *object =
+        json_node_get_object(root);
+
+    if (!json_object_has_member(object, "outputs") ||
+            !json_object_has_member(object, "workspaces") ||
+            !json_object_has_member(object, "groups") ||
+            !json_object_has_member(object, "windows")) {
+        return false;
+    }
+
+    JsonArray *outputs =
+        json_object_get_array_member(object, "outputs");
+    JsonArray *workspaces =
+        json_object_get_array_member(object, "workspaces");
+    JsonArray *groups =
+        json_object_get_array_member(object, "groups");
+    JsonArray *windows =
+        json_object_get_array_member(object, "windows");
+
+    if (!outputs ||
+            !workspaces ||
+            !groups ||
+            !windows ||
+            json_array_get_length(outputs) >
+                UI_ACTIONS_MAX_OUTPUTS) {
+        return false;
+    }
+
+    JsonObject *subject =
+        find_object_by_id(
+            scope == UI_ACTIONS_SCOPE_WINDOW
+                ? windows
+                : groups,
+            subject_id
+        );
+    const char *workspace_id =
+        subject
+            ? required_string(
+                subject,
+                "workspace_id"
+            )
+            : NULL;
+
+    if (!workspace_id ||
+            !positive_decimal_id(
+                workspace_id,
+                NULL)) {
+        return false;
+    }
+
+    guint output_index = UI_ACTIONS_MAX_OUTPUTS;
+    const char *output_name = NULL;
+
+    for (guint i = 0;
+            i < json_array_get_length(outputs);
+            i++) {
+        JsonObject *output =
+            array_object(outputs, i);
+        const char *candidate_name =
+            required_string(output, "name");
+        const char *visible_workspace_id =
+            required_string(
+                output,
+                "visible_workspace_id"
+            );
+
+        if (!candidate_name ||
+                !visible_workspace_id) {
+            return false;
+        }
+
+        if (strcmp(
+                visible_workspace_id,
+                workspace_id
+            ) == 0) {
+            output_index = i;
+            output_name = candidate_name;
+            break;
+        }
+    }
+
+    if (output_index >= UI_ACTIONS_MAX_OUTPUTS ||
+            !output_name ||
+            !set_context_subject(
+                output_index,
+                scope,
+                subject_id)) {
+        if (output_index < UI_ACTIONS_MAX_OUTPUTS) {
+            clear_context_subject(output_index);
+        }
+        return false;
+    }
+
+    g_autoptr(GHashTable) desired =
+        g_hash_table_new_full(
+            g_str_hash,
+            g_str_equal,
+            g_free,
+            NULL
+        );
+
+    if (!desired ||
+            !sync_output_actions(
+                config_dir,
+                output_index,
+                output_name,
+                workspace_id,
+                workspaces,
+                groups,
+                windows,
+                desired,
+                scope,
+                subject_id)) {
+        clear_context_subject(output_index);
+        return false;
+    }
+
+    remove_missing(
+        desired,
+        config_dir
+    );
+
+    g_autofree char *parent =
+        g_strdup_printf("onyrion-action-menu-%u", output_index);
+    if (!parent ||
+            !widget_update_class(
+                config_dir,
+                parent,
+                "onyrion-powermenu onyrion-actions-menu onyrion-actions-ready",
+                false) ||
+            !open_context_menu(
+                config_dir,
+                output_index)) {
+        clear_context_subject(output_index);
+        return false;
     }
 
     return true;
@@ -1409,7 +2163,9 @@ bool ui_actions_v11_sync_apply(
                     workspaces,
                     groups,
                     windows,
-                    desired)) {
+                    desired,
+                    runtime.context_scope[output_index],
+                    runtime.context_subject_id[output_index])) {
             return false;
         }
     }

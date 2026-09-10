@@ -118,6 +118,7 @@ sources = files(
   'src/session_lock.c',
   'src/output.c',
   'src/group.c',
+  'src/group_surface.c',
   'src/input.c',
   'src/layer_shell.c',
   'src/layout.c',
@@ -152,11 +153,36 @@ install_data(
 
 if get_option('test_shell')
   wayland_client = dependency('wayland-client')
+  wayland_protocols = dependency('wayland-protocols')
+
+  xdg_shell_protocol = wayland.scan_xml(
+    join_paths(
+      wayland_protocols.get_variable(pkgconfig: 'pkgdatadir'),
+      'stable',
+      'xdg-shell',
+      'xdg-shell.xml',
+    ),
+    client: true,
+    server: false,
+    public: false,
+    include_core_only: true,
+  )
 
   executable(
     'onyrion-test-shell',
     'tools/test-shell.c',
     shell_protocol,
+    dependencies: [
+      wayland_client,
+    ],
+    install: false,
+  )
+
+  executable(
+    'onyrion-test-group-surface-configure',
+    'tools/test-group-surface-configure.c',
+    shell_protocol,
+    xdg_shell_protocol,
     dependencies: [
       wayland_client,
     ],

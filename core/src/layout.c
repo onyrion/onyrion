@@ -273,9 +273,6 @@ void onyrion_layout_apply_group(
         return;
     }
 
-    OnyrionTile *tile =
-        group->tile;
-
     OnyrionWindow *window =
         group->active;
 
@@ -326,24 +323,16 @@ void onyrion_layout_apply_group(
         }
     }
 
-    int chrome_height =
-        ONYRION_GROUP_CHROME_HEIGHT;
+    struct wlr_box content = {0};
 
-    if (tile->height <= 1) {
-        chrome_height = 0;
-    } else if (chrome_height >= tile->height) {
-        chrome_height =
-            tile->height - 1;
+    if (!onyrion_group_content_box(group, &content)) {
+        return;
     }
 
-    window->x = tile->x;
-    window->y =
-        tile->y +
-        chrome_height;
-    window->width = tile->width;
-    window->height =
-        tile->height -
-        chrome_height;
+    window->x = content.x;
+    window->y = content.y;
+    window->width = content.width;
+    window->height = content.height;
 
     wlr_scene_node_set_position(
         &window->scene_tree->node,

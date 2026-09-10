@@ -364,6 +364,12 @@ static bool switch_output_workspace(
         return true;
     }
 
+    onyrion_group_follow_pinned_workspace(
+        server,
+        output,
+        target
+    );
+
     if (previous && previous->scene_tree) {
         wlr_scene_node_set_enabled(
             &previous->scene_tree->node,
@@ -545,6 +551,11 @@ void onyrion_workspace_output_removed(
     if (!server || !output) {
         return;
     }
+
+    onyrion_group_output_removed(
+        server,
+        output
+    );
 
     if (output->visible_workspace &&
             output->visible_workspace->scene_tree) {

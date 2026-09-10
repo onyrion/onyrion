@@ -3635,6 +3635,9 @@ static bool validate_action(
     case ONYRION_ACTION_GROUP_SPLIT_AT:
     case ONYRION_ACTION_WINDOW_FLOAT:
     case ONYRION_ACTION_WINDOW_TILE:
+    case ONYRION_ACTION_GROUP_FLOAT:
+    case ONYRION_ACTION_GROUP_TILE:
+    case ONYRION_ACTION_GROUP_SET_PINNED:
         return set_error(
             error,
             error_size,

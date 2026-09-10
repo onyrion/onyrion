@@ -56,6 +56,7 @@ static void workspace_finish(ShellWorkspaceState *workspace) {
 static void group_finish(ShellGroupState *group) {
     free(group->id);
     free(group->workspace_id);
+    free(group->pinned_output_name);
     *group = (ShellGroupState){0};
 }
 
@@ -367,8 +368,59 @@ bool shell_state_add_group(
             .workspace_id = workspace_copy,
             .active = active,
             .window_count = window_count,
+            .placement = SHELL_GROUP_PLACEMENT_UNKNOWN,
         };
     return true;
+}
+
+bool shell_state_set_group_placement(
+        ShellState *state,
+        const char *group_id,
+        ShellGroupPlacement placement,
+        bool pinned,
+        const char *pinned_output_name) {
+    if (!state->snapshot_in_progress ||
+            !nonempty(group_id) ||
+            pinned_output_name == NULL ||
+            (placement != SHELL_GROUP_PLACEMENT_TILED &&
+             placement != SHELL_GROUP_PLACEMENT_FLOATING)) {
+        return false;
+    }
+
+    if ((placement == SHELL_GROUP_PLACEMENT_TILED && pinned) ||
+            (pinned && !nonempty(pinned_output_name)) ||
+            (!pinned && pinned_output_name[0] != '\0')) {
+        return false;
+    }
+
+    ShellGroupState *group =
+        find_group_mut(&state->staging, group_id);
+    if (!group || group->placement_seen) {
+        return false;
+    }
+
+    group->pinned_output_name = copy_string(pinned_output_name);
+    if (!group->pinned_output_name) {
+        return false;
+    }
+
+    group->placement = placement;
+    group->pinned = pinned;
+    group->placement_seen = true;
+    return true;
+}
+
+const char *shell_group_placement_name(
+        ShellGroupPlacement placement) {
+    switch (placement) {
+    case SHELL_GROUP_PLACEMENT_TILED:
+        return "tiled";
+    case SHELL_GROUP_PLACEMENT_FLOATING:
+        return "floating";
+    case SHELL_GROUP_PLACEMENT_UNKNOWN:
+        break;
+    }
+    return "unknown";
 }
 
 bool shell_state_add_window(
@@ -576,6 +628,17 @@ static bool snapshot_validate(const ShellSnapshot *snapshot) {
             return false;
         }
 
+        if (group->placement_seen) {
+            if ((group->placement != SHELL_GROUP_PLACEMENT_TILED &&
+                 group->placement != SHELL_GROUP_PLACEMENT_FLOATING) ||
+                    (group->placement == SHELL_GROUP_PLACEMENT_TILED && group->pinned) ||
+                    (group->pinned && !nonempty(group->pinned_output_name)) ||
+                    (!group->pinned && group->pinned_output_name[0] != '\0') ||
+                    (group->pinned && !find_output(snapshot, group->pinned_output_name))) {
+                return false;
+            }
+        }
+
         size_t group_windows = 0;
         size_t active_windows = 0;
         for (size_t j = 0; j < snapshot->window_count; j++) {
@@ -612,16 +675,30 @@ static bool snapshot_validate(const ShellSnapshot *snapshot) {
             const ShellGroupState *group =
                 find_group(snapshot, window->group_id);
             if (!group ||
-                    strcmp(group->workspace_id, window->workspace_id) != 0) {
+                    strcmp(group->workspace_id, window->workspace_id) != 0 ||
+                    (group->placement_seen &&
+                     group->placement != SHELL_GROUP_PLACEMENT_TILED)) {
                 return false;
             }
             break;
         }
 
         case SHELL_WINDOW_PLACEMENT_FLOATING:
-            if (window->group_id[0] != '\0' ||
-                    window->parent_window_id[0] != '\0') {
+            if (window->parent_window_id[0] != '\0') {
                 return false;
+            }
+
+            /* v12: floating windows remain owned by a floating Group.
+             * v11 compatibility snapshots may still expose an empty group_id. */
+            if (window->group_id[0] != '\0') {
+                const ShellGroupState *group =
+                    find_group(snapshot, window->group_id);
+                if (!group ||
+                        strcmp(group->workspace_id, window->workspace_id) != 0 ||
+                        (group->placement_seen &&
+                         group->placement != SHELL_GROUP_PLACEMENT_FLOATING)) {
+                    return false;
+                }
             }
             break;
 

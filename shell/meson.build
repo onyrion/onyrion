@@ -149,6 +149,8 @@ executable(
         'src/ui_runtime.c',
         'src/ui_daily_v11.c',
         'src/ui_actions_v11.c',
+        'src/widget_model.c',
+        'src/ewwii_adapter.c',
         'src/power_actions.c',
         'src/tray_sni.c',
         protocol_header,
@@ -174,6 +176,25 @@ install_symlink(
     install_dir: get_option('bindir'),
 )
 
+widget_model_test = executable(
+    'onyrion-widget-model-test',
+    [
+        'tests/widget_model_test.c',
+        'src/widget_model.c',
+    ],
+    include_directories: include_directories('include'),
+    dependencies: [
+        glib,
+        json_glib,
+    ],
+    install: false,
+)
+
+test(
+    'widget-model-bar-projection',
+    widget_model_test,
+)
+
 onyrion_libexec_dir = get_option('libexecdir') / 'onyrion'
 onyrion_data_dir = get_option('datadir') / 'onyrion'
 
@@ -188,6 +209,7 @@ onyrion_ewwii_plugin_builder = find_program(
 onyrion_ewwii_plugin_sources = files(
     'plugins/onyrion-ewwii-plugin/Cargo.toml',
     'plugins/onyrion-ewwii-plugin/Cargo.lock',
+    'plugins/onyrion-ewwii-plugin/build.rs',
     'plugins/onyrion-ewwii-plugin/src/lib.rs',
     'plugins/onyrion-ewwii-plugin/src/notifications.rs',
     'plugins/onyrion-ewwii-plugin/src/audio_renderer.rs',
@@ -195,6 +217,11 @@ onyrion_ewwii_plugin_sources = files(
     'plugins/onyrion-ewwii-plugin/src/bluetooth_renderer.rs',
     'plugins/onyrion-ewwii-plugin/src/tray_renderer.rs',
     'plugins/onyrion-ewwii-plugin/src/scalar_projection.rs',
+    'plugins/onyrion-ewwii-plugin/src/bar_renderer.rs',
+    'plugins/onyrion-ewwii-plugin/src/tabgroup_model.rs',
+    'plugins/onyrion-ewwii-plugin/src/tabgroup_renderer.rs',
+    'plugins/onyrion-ewwii-plugin/src/group_surface_bridge.c',
+    'plugins/onyrion-ewwii-plugin/src/group_surface_role.rs',
 )
 
 onyrion_ewwii_plugin = custom_target(

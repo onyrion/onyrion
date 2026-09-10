@@ -9,7 +9,7 @@ provider "ewwii-main" type="ewwii" {
     autostart #true
     required #false
     exec "/usr/share/onyrion/ui/ewwii/start-ewwii.sh"
-    restart policy="on-failure" delay-ms=1000 max-delay-ms=30000
+    restart policy="always" delay-ms=1000 max-delay-ms=30000
     health type="process"
 
     capability "ui:bar" {
@@ -114,6 +114,15 @@ provider "control-native" type="command" {
     capability "system:audio-input" {
         action "mute-toggle" {
             exec "onyrion-control" "audio" "source" "mute" "toggle"
+        }
+    }
+
+    capability "system:brightness" {
+        action "up" {
+            exec "brightnessctl" "set" "+5%"
+        }
+        action "down" {
+            exec "brightnessctl" "set" "5%-"
         }
     }
 }

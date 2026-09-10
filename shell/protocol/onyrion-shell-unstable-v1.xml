@@ -10,7 +10,7 @@
     notice appear in supporting documentation.
   </copyright>
 
-  <interface name="onyrion_shell_unstable_v1" version="11">
+  <interface name="onyrion_shell_unstable_v1" version="14">
     <description summary="experimental Onyrion shell control protocol">
       Experimental development protocol between Onyrion core and shell
       clients.
@@ -150,7 +150,7 @@
         name="window_float"
         value="23"
         since="11"
-        summary="detach a tiled window into direct floating placement"
+        summary="detach a tiled window into a floating group"
       />
       <entry
         name="window_tile"
@@ -158,6 +158,50 @@
         since="11"
         summary="return a floating window to tiled group placement"
       />
+      <entry
+        name="group_float"
+        value="25"
+        since="12"
+        summary="place a whole group in floating placement"
+      />
+      <entry
+        name="group_tile"
+        value="26"
+        since="12"
+        summary="place a whole group in tiled placement"
+      />
+      <entry
+        name="group_set_pinned"
+        value="27"
+        since="12"
+        summary="pin or unpin one floating group to its output"
+      />
+      <entry
+        name="tab_activate_next"
+        value="28"
+        since="13"
+        summary="activate the next window in the active group"
+      />
+      <entry
+        name="tab_activate_previous"
+        value="29"
+        since="13"
+        summary="activate the previous window in the active group"
+      />
+    </enum>
+
+    <enum name="error">
+      <entry name="surface_role" value="1" summary="wl_surface already has a role"/>
+      <entry name="invalid_group" value="2" summary="group id does not resolve"/>
+      <entry name="invalid_insets" value="3" summary="content insets are invalid"/>
+      <entry name="invalid_drag" value="4" summary="drag request is invalid"/>
+    </enum>
+
+    <enum name="drag_target_kind">
+      <entry name="none" value="0"/>
+      <entry name="group" value="1"/>
+      <entry name="tab_before" value="2"/>
+      <entry name="tab_after" value="3"/>
     </enum>
 
     <enum name="direction">
@@ -176,6 +220,11 @@
       <entry name="tiled" value="0"/>
       <entry name="transient" value="1"/>
       <entry name="floating" value="2"/>
+    </enum>
+
+    <enum name="group_placement">
+      <entry name="tiled" value="0"/>
+      <entry name="floating" value="1"/>
     </enum>
 
     <request name="destroy" type="destructor">
@@ -576,19 +625,170 @@
     </request>
 
     <request name="float_window" since="11">
-      <description summary="detach a tiled window into floating placement">
-        The window remains directly owned by its workspace, leaves its Group,
-        and receives deterministic centered floating geometry.
+      <description summary="detach a window into a floating Group">
+        Compatibility request. A multi-tab source detaches this window into
+        its own Group; a one-window source keeps its Group identity. The
+        resulting Group owns floating geometry.
       </description>
       <arg name="window_id" type="string"/>
     </request>
 
     <request name="tile_window" since="11">
       <description summary="return a floating window to tiled placement">
-        The window joins the workspace active Group, creating one when needed.
+        Compatibility request. A multi-tab floating Group detaches this
+        window into its own tiled Group; a one-window floating Group keeps
+        its Group identity and becomes tiled.
       </description>
       <arg name="window_id" type="string"/>
     </request>
 
+    <event name="group_placement" since="12">
+      <description summary="authoritative Group placement and pin state"/>
+      <arg name="group_id" type="string"/>
+      <arg name="placement" type="uint" enum="group_placement"/>
+      <arg name="pinned" type="uint"/>
+      <arg name="pinned_output_name" type="string"/>
+    </event>
+
+    <request name="float_group" since="12">
+      <description summary="place a whole Group in floating placement"/>
+      <arg name="group_id" type="string"/>
+    </request>
+
+    <request name="tile_group" since="12">
+      <description summary="return a whole floating Group to tiled placement"/>
+      <arg name="group_id" type="string"/>
+    </request>
+
+    <request name="set_group_pinned" since="12">
+      <description summary="set output-local sticky state for a floating Group">
+        Pinning is valid only for floating Groups. While pinned, the Group
+        follows workspace changes only on the output where pinning occurred.
+      </description>
+      <arg name="group_id" type="string"/>
+      <arg name="pinned" type="uint"/>
+    </request>
+
+    <request name="get_group_surface" since="13">
+      <description summary="assign a Shell-owned wl_surface to a Group">
+        The surface receives a lifetime role but its relative placement is
+        entirely supplied by the Shell through onyrion_group_surface_v1.
+        Creating the surface does not reserve client content geometry.
+      </description>
+      <arg name="id" type="new_id" interface="onyrion_group_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="group_id" type="string"/>
+      <arg name="namespace" type="string"/>
+    </request>
+
+    <request name="set_group_content_insets" since="13">
+      <description summary="set Shell-defined Group client-content exclusions">
+        Insets are independent from attached surface placement. Once set by a
+        Shell resource, legacy 24px Core chrome is disabled for that Group.
+        Destroying the owning Shell resource clears the insets and restores
+        legacy fallback chrome.
+      </description>
+      <arg name="group_id" type="string"/>
+      <arg name="top" type="uint"/>
+      <arg name="right" type="uint"/>
+      <arg name="bottom" type="uint"/>
+      <arg name="left" type="uint"/>
+    </request>
+
+    <request name="tab_activate_next" since="13">
+      <description summary="activate the next window in the active Group"/>
+    </request>
+
+    <request name="tab_activate_previous" since="13">
+      <description summary="activate the previous window in the active Group"/>
+    </request>
+
+    <request name="begin_window_drag" since="13">
+      <description summary="begin a Core-authoritative drag for a Shell tab">
+        button and serial identify the Shell pointer press that initiated the
+        drag. Core owns layout/drop commit; Shell may provide semantic tab
+        strip targets with set_window_drag_target.
+      </description>
+      <arg name="window_id" type="string"/>
+      <arg name="button" type="uint"/>
+      <arg name="serial" type="uint"/>
+    </request>
+
+    <request name="begin_group_drag" since="13">
+      <description summary="begin a Core-authoritative drag for a Shell Group control"/>
+      <arg name="group_id" type="string"/>
+      <arg name="button" type="uint"/>
+      <arg name="serial" type="uint"/>
+    </request>
+
+    <request name="set_window_drag_target" since="13">
+      <description summary="supply semantic target for a Shell-owned tab strip">
+        This hint is accepted only during a Shell-origin window drag. Core
+        still owns layout-edge classification. A hint is used only while the
+        pointer is over a Group-attached Shell surface of the target Group.
+      </description>
+      <arg name="group_id" type="string"/>
+      <arg name="reference_window_id" type="string" allow-null="true"/>
+      <arg name="kind" type="uint" enum="drag_target_kind"/>
+    </request>
+
+    <event name="drag_surface_motion" since="13">
+      <description summary="report pointer motion over a Group-attached Shell surface during Shell drag">
+        Empty group_id means the pointer is not over a Group-attached Shell surface.
+        Coordinates are local to the attached surface rectangle. Shell may use
+        them to compute a semantic tab-strip target and send set_window_drag_target.
+      </description>
+      <arg name="group_id" type="string"/>
+      <arg name="namespace" type="string"/>
+      <arg name="x" type="fixed"/>
+      <arg name="y" type="fixed"/>
+    </event>
+
+  </interface>
+
+  <interface name="onyrion_group_surface_v1" version="14">
+    <description summary="Shell-owned surface attached to an Onyrion Group">
+      Placement is relative to the Group outer geometry and is entirely
+      controlled by the Shell. Content insets are configured separately on
+      onyrion_shell_unstable_v1.
+    </description>
+
+    <enum name="error">
+      <entry name="invalid_rect" value="1" summary="surface rectangle has invalid size"/>
+      <entry name="invalid_layer" value="2" summary="surface layer is invalid"/>
+    </enum>
+
+    <enum name="layer">
+      <entry name="below_client" value="0"/>
+      <entry name="above_client" value="1"/>
+    </enum>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="set_rect">
+      <description summary="set relative Group coordinates and clipping rectangle"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="set_layer">
+      <description summary="set Shell-selected stacking relation to active Group client">
+        Core does not choose whether Group UI is above or below client content.
+        The surface remains disabled until this request is received.
+      </description>
+      <arg name="layer" type="uint" enum="layer"/>
+    </request>
+
+    <event name="configure" since="14">
+      <description summary="report authoritative Group outer dimensions">
+        Width and height are the current Group outer_box dimensions before
+        Shell-defined content insets are applied. Position-only changes do not
+        require this event.
+      </description>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
   </interface>
 </protocol>

@@ -47,6 +47,8 @@ typedef struct onyrion_window {
     struct wl_listener unmap;
     struct wl_listener destroy;
     struct wl_listener request_fullscreen;
+    struct wl_listener request_move;
+    struct wl_listener request_resize;
     struct wl_listener set_title;
     struct wl_listener set_app_id;
     struct wl_listener set_parent;
@@ -86,8 +88,34 @@ bool onyrion_window_tile_id(
     uint64_t id
 );
 
+[[nodiscard]]
+bool onyrion_window_set_floating_geometry(
+    OnyrionWindow *window,
+    int x,
+    int y,
+    int width,
+    int height
+);
+
+[[nodiscard]]
+bool onyrion_window_resize_floating_from_edges(
+    OnyrionWindow *window,
+    int origin_x,
+    int origin_y,
+    int origin_width,
+    int origin_height,
+    uint32_t edges,
+    int dx,
+    int dy
+);
+
 void onyrion_window_reflow_transients(
     OnyrionWindow *parent
+);
+
+void onyrion_window_move_transients_to_workspace(
+    OnyrionWindow *parent,
+    struct onyrion_workspace *workspace
 );
 
 [[nodiscard]]

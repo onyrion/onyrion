@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     process::{Command, Stdio},
     rc::Rc,
@@ -14,6 +14,8 @@ use serde::Deserialize;
 
 const WIFI_WIDGET: &str = "onyrion-wifi-dynamic";
 const WIFI_STATUS_SIGNAL: &str = "onyrion_wifi_renderer_status";
+const WIFI_SCAN_TICK_MS: u64 = 100;
+const WIFI_SCAN_PERIOD_TICKS: u32 = 50;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct WifiState {
@@ -59,6 +61,7 @@ struct PendingWifiState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WifiAction {
     Connect(String),
+    Disconnect,
     Prompt(String),
 }
 
@@ -76,30 +79,135 @@ struct WifiUi {
 impl WifiUi {
     fn new(host: Arc<dyn EwwiiAPI>) -> Self {
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        root.set_hexpand(true);
+        root.set_halign(gtk4::Align::Fill);
+        root.set_vexpand(false);
 
         let active_label = gtk4::Label::new(Some("Wi-Fi · loading"));
         active_label.set_halign(gtk4::Align::Start);
+        active_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        active_label.set_max_width_chars(36);
         active_label.add_css_class("onyrion-wifi-spaced");
 
         let scan = gtk4::Button::with_label("Scan");
         scan.add_css_class("onyrion-shell-control");
         scan.add_css_class("onyrion-wifi-spaced");
-        scan.connect_clicked(move |_| {
-            spawn_control(
-                host.clone(),
-                vec![
-                    "wifi".to_string(),
-                    "networks".to_string(),
-                    "scan".to_string(),
-                ],
-            );
-        });
+
+        let progress = gtk4::ProgressBar::new();
+        progress.add_css_class("onyrion-scan-progress");
+        progress.set_fraction(0.0);
+
+        let scan_active = Rc::new(Cell::new(false));
+        let scan_tick = Rc::new(Cell::new(0u32));
+        let scan_timer: Rc<RefCell<Option<gtk4::glib::SourceId>>> =
+            Rc::new(RefCell::new(None));
+
+        {
+            let click_host = host.clone();
+            let click_active = scan_active.clone();
+            let click_tick = scan_tick.clone();
+            let click_timer = scan_timer.clone();
+            let click_progress = progress.clone();
+            scan.connect_clicked(move |button| {
+                if click_active.get() {
+                    click_active.set(false);
+                    click_tick.set(0);
+                    if let Some(id) = click_timer.borrow_mut().take() {
+                        id.remove();
+                    }
+                    button.set_label("Scan");
+                    click_progress.set_fraction(0.0);
+                    return;
+                }
+
+                click_active.set(true);
+                click_tick.set(0);
+                button.set_label("Scan · 5s");
+                click_progress.set_fraction(0.0);
+                spawn_control(
+                    click_host.clone(),
+                    vec![
+                        "wifi".to_string(),
+                        "networks".to_string(),
+                        "scan".to_string(),
+                    ],
+                );
+
+                let timer_host = click_host.clone();
+                let timer_active = click_active.clone();
+                let timer_tick = click_tick.clone();
+                let timer_button = button.clone();
+                let timer_progress = click_progress.clone();
+                let timer_id = gtk4::glib::timeout_add_local(
+                    Duration::from_millis(WIFI_SCAN_TICK_MS),
+                    move || {
+                        if !timer_active.get() {
+                            return gtk4::glib::ControlFlow::Break;
+                        }
+
+                        let next = timer_tick.get() + 1;
+                        if next >= WIFI_SCAN_PERIOD_TICKS {
+                            timer_tick.set(0);
+                            timer_progress.set_fraction(0.0);
+                            timer_button.set_label("Scan · 5s");
+                            spawn_control(
+                                timer_host.clone(),
+                                vec![
+                                    "wifi".to_string(),
+                                    "networks".to_string(),
+                                    "scan".to_string(),
+                                ],
+                            );
+                        } else {
+                            timer_tick.set(next);
+                            let fraction = next as f64 / WIFI_SCAN_PERIOD_TICKS as f64;
+                            timer_progress.set_fraction(fraction);
+                            let remaining =
+                                ((WIFI_SCAN_PERIOD_TICKS - next) * WIFI_SCAN_TICK_MS as u32 + 999)
+                                    / 1000;
+                            timer_button.set_label(&format!("Scan · {}s", remaining.max(1)));
+                        }
+
+                        gtk4::glib::ControlFlow::Continue
+                    },
+                );
+                *click_timer.borrow_mut() = Some(timer_id);
+            });
+        }
+
+        {
+            let unmap_active = scan_active.clone();
+            let unmap_tick = scan_tick.clone();
+            let unmap_timer = scan_timer.clone();
+            let unmap_button = scan.clone();
+            let unmap_progress = progress.clone();
+            root.connect_unmap(move |_| {
+                unmap_active.set(false);
+                unmap_tick.set(0);
+                if let Some(id) = unmap_timer.borrow_mut().take() {
+                    id.remove();
+                }
+                unmap_button.set_label("Scan");
+                unmap_progress.set_fraction(0.0);
+            });
+        }
 
         let networks_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        networks_box.set_hexpand(true);
+
+        let networks_scroll = gtk4::ScrolledWindow::new();
+        networks_scroll.set_hexpand(true);
+        networks_scroll.set_halign(gtk4::Align::Fill);
+        networks_scroll.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        networks_scroll.set_propagate_natural_height(true);
+        networks_scroll.set_max_content_height(280);
+        networks_scroll.set_vexpand(false);
+        networks_scroll.set_child(Some(&networks_box));
 
         root.append(&active_label);
         root.append(&scan);
-        root.append(&networks_box);
+        root.append(&progress);
+        root.append(&networks_scroll);
 
         Self {
             root,
@@ -157,11 +265,51 @@ fn network_label(net: &WifiNetwork) -> String {
 }
 
 fn network_action(net: &WifiNetwork) -> WifiAction {
-    if net.active || net.saved || !net.secured {
+    if net.active {
+        WifiAction::Disconnect
+    } else if net.saved || !net.secured {
         WifiAction::Connect(net.bssid.clone())
     } else {
         WifiAction::Prompt(net.bssid.clone())
     }
+}
+
+fn network_better(candidate: &WifiNetwork, current: &WifiNetwork) -> bool {
+    (candidate.active, candidate.saved, candidate.strength, &candidate.bssid)
+        > (current.active, current.saved, current.strength, &current.bssid)
+}
+
+fn network_key(net: &WifiNetwork) -> &str {
+    if net.ssid.trim().is_empty() {
+        net.bssid.as_str()
+    } else {
+        net.ssid.as_str()
+    }
+}
+
+fn canonical_networks(networks: &[WifiNetwork]) -> Vec<&WifiNetwork> {
+    let mut by_ssid: HashMap<&str, &WifiNetwork> = HashMap::new();
+
+    for net in networks {
+        match by_ssid.get(network_key(net)).copied() {
+            Some(current) if !network_better(net, current) => {}
+            _ => {
+                by_ssid.insert(network_key(net), net);
+            }
+        }
+    }
+
+    let mut result: Vec<&WifiNetwork> = by_ssid.into_values().collect();
+    result.sort_by(|left, right| {
+        right
+            .active
+            .cmp(&left.active)
+            .then_with(|| right.saved.cmp(&left.saved))
+            .then_with(|| right.strength.cmp(&left.strength))
+            .then_with(|| left.ssid.to_lowercase().cmp(&right.ssid.to_lowercase()))
+            .then_with(|| left.bssid.cmp(&right.bssid))
+    });
+    result
 }
 
 fn control_bin() -> String {
@@ -236,6 +384,14 @@ fn spawn_prompt(host: Arc<dyn EwwiiAPI>, bssid: String) {
 
 fn create_network_row(host: Arc<dyn EwwiiAPI>, net: &WifiNetwork) -> NetworkRow {
     let button = gtk4::Button::with_label(&network_label(net));
+    button.add_css_class("onyrion-list-row");
+    button.set_tooltip_text(button.label().as_deref());
+    if let Some(label) = button.child().and_then(|child| child.downcast::<gtk4::Label>().ok()) {
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.set_max_width_chars(36);
+        label.set_xalign(0.0);
+    }
+    button.set_focusable(false);
     button.add_css_class("onyrion-wifi-slot-live");
     button.add_css_class("onyrion-wifi-spaced");
 
@@ -245,6 +401,12 @@ fn create_network_row(host: Arc<dyn EwwiiAPI>, net: &WifiNetwork) -> NetworkRow 
             spawn_control(
                 host.clone(),
                 vec!["wifi".to_string(), "connect".to_string(), bssid.clone()],
+            );
+        }
+        WifiAction::Disconnect => {
+            spawn_control(
+                host.clone(),
+                vec!["wifi".to_string(), "disconnect".to_string()],
             );
         }
         WifiAction::Prompt(bssid) => {
@@ -261,27 +423,37 @@ fn reconcile_networks(
     rows: &mut HashMap<String, NetworkRow>,
     networks: &[WifiNetwork],
 ) {
-    let wanted: HashSet<&str> = networks.iter().map(|net| net.bssid.as_str()).collect();
+    let canonical = canonical_networks(networks);
+    let wanted: HashSet<&str> = canonical.iter().map(|net| network_key(net)).collect();
     let stale: Vec<String> = rows
         .keys()
-        .filter(|bssid| !wanted.contains(bssid.as_str()))
+        .filter(|ssid| !wanted.contains(ssid.as_str()))
         .cloned()
         .collect();
 
-    for bssid in stale {
-        if let Some(row) = rows.remove(&bssid) {
+    for ssid in stale {
+        if let Some(row) = rows.remove(&ssid) {
             container.remove(&row.button);
         }
     }
 
-    for net in networks {
-        if let Some(row) = rows.remove(&net.bssid) {
+    /* Recreate rows because the click action contains the representative BSSID.
+     * The representative can change when roaming or when a stronger AP appears. */
+    for net in &canonical {
+        if let Some(row) = rows.remove(network_key(net)) {
             container.remove(&row.button);
         }
-
         let row = create_network_row(host.clone(), net);
         container.append(&row.button);
-        rows.insert(net.bssid.clone(), row);
+        rows.insert(network_key(net).to_string(), row);
+    }
+
+    let mut previous: Option<gtk4::Widget> = None;
+    for net in canonical {
+        if let Some(row) = rows.get(network_key(net)) {
+            container.reorder_child_after(&row.button, previous.as_ref());
+            previous = Some(row.button.clone().upcast());
+        }
     }
 }
 
@@ -465,7 +637,7 @@ mod tests {
     fn actions_preserve_connect_vs_prompt_policy() {
         assert_eq!(
             network_action(&network(true, false, true, "WPA2")),
-            WifiAction::Connect("AA:BB:CC:DD:EE:FF".to_string())
+            WifiAction::Disconnect
         );
         assert_eq!(
             network_action(&network(false, true, true, "WPA2")),
@@ -480,4 +652,27 @@ mod tests {
             WifiAction::Prompt("AA:BB:CC:DD:EE:FF".to_string())
         );
     }
+    #[test]
+    fn canonical_networks_dedup_and_rank() {
+        let mut weak = network(false, false, true, "WPA2");
+        weak.bssid = "00:00:00:00:00:01".to_string();
+        weak.strength = 20;
+
+        let mut strong = network(false, true, true, "WPA2");
+        strong.bssid = "00:00:00:00:00:02".to_string();
+        strong.strength = 80;
+
+        let mut other = network(false, false, false, "");
+        other.ssid = "Other".to_string();
+        other.bssid = "00:00:00:00:00:03".to_string();
+        other.strength = 90;
+
+        let items = vec![weak, other, strong];
+        let canonical = canonical_networks(&items);
+        assert_eq!(canonical.len(), 2);
+        assert_eq!(canonical[0].ssid, "Test");
+        assert_eq!(canonical[0].bssid, "00:00:00:00:00:02");
+        assert_eq!(canonical[1].ssid, "Other");
+    }
+
 }

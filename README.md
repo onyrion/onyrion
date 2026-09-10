@@ -369,3 +369,25 @@ Shell config:
 или сторонний компонент не указывает другую лицензию.
 
 Лицензии сторонних компонентов сохраняются в соответствующих каталогах.
+
+## RPM / Fedora
+
+Для конференционной и тестовой установки добавлена RPM-сборка для
+**Fedora 44+**.
+
+Текущая граница публикации: **Onyrion 0.1.0, pre-beta-development-snapshot**.
+
+```sh
+sudo dnf install \
+  gcc git meson ninja-build pkgconf-pkg-config rust cargo rpm-build \
+  wayland-devel wayland-protocols-devel wlr-protocols-devel \
+  wlroots-devel libxkbcommon-devel libinput-devel \
+  glib2-devel json-glib-devel pipewire-devel libxcb-devel \
+  gtk4-devel gtk4-layer-shell-devel
+
+./scripts/build-rpm.sh
+sudo dnf install ./dist/onyrion-*.rpm
+```
+
+Подробности и текущее ограничение Ewwii:
+[`packaging/README.md`](packaging/README.md).

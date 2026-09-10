@@ -101,7 +101,7 @@ struct StreamRow {
 }
 
 struct AudioUi {
-    root: gtk4::Box,
+    root: gtk4::ScrolledWindow,
     outputs_box: gtk4::Box,
     inputs_box: gtk4::Box,
     playback_box: gtk4::Box,
@@ -114,7 +114,8 @@ struct AudioUi {
 
 impl AudioUi {
     fn new() -> Self {
-        let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        content.set_hexpand(true);
 
         let outputs_title = section_label("Outputs");
         let outputs_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -128,14 +129,27 @@ impl AudioUi {
         let capture_title = section_label("Capture streams");
         let capture_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
-        root.append(&outputs_title);
-        root.append(&outputs_box);
-        root.append(&inputs_title);
-        root.append(&inputs_box);
-        root.append(&playback_title);
-        root.append(&playback_box);
-        root.append(&capture_title);
-        root.append(&capture_box);
+        content.append(&outputs_title);
+        content.append(&outputs_box);
+        content.append(&inputs_title);
+        content.append(&inputs_box);
+        content.append(&playback_title);
+        content.append(&playback_box);
+        content.append(&capture_title);
+        content.append(&capture_box);
+
+        /* Keep the mixer compact for ordinary device/stream counts, but never
+         * let dynamic PipeWire rows push the layer-shell overlay below the
+         * usable screen.  The title and Close button remain outside this
+         * widget, so they stay reachable while the dynamic rows scroll. */
+        let root = gtk4::ScrolledWindow::new();
+        root.set_hexpand(true);
+        root.set_halign(gtk4::Align::Fill);
+        root.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        root.set_propagate_natural_height(true);
+        root.set_max_content_height(320);
+        root.set_vexpand(false);
+        root.set_child(Some(&content));
 
         Self {
             root,
@@ -216,10 +230,17 @@ fn device_label(item: &AudioDevice) -> String {
 }
 
 fn stream_label(item: &AudioStream) -> String {
+    /*
+     * The PipeWire-facing model stores normalized linear volume in [0, 1].
+     * Formatting f64 directly leaks conversion noise such as
+     * 0.9999999999999998 into the UI.  Display a stable rounded percentage;
+     * control actions continue to operate on the normalized value.
+     */
+    let percent = (item.volume.clamp(0.0, 1.0) * 100.0).round() as u32;
     if item.muted {
-        format!("{} · {} · muted", item.name, item.volume)
+        format!("{} · {}% · muted", item.name, percent)
     } else {
-        format!("{} · {}", item.name, item.volume)
+        format!("{} · {}%", item.name, percent)
     }
 }
 
@@ -264,6 +285,13 @@ fn spawn_control(host: Arc<dyn EwwiiAPI>, args: Vec<String>) {
 fn create_device_row(host: Arc<dyn EwwiiAPI>, item: &AudioDevice, kind: DeviceKind) -> DeviceRow {
     let button = gtk4::Button::with_label(&device_label(item));
     button.add_css_class("onyrion-audio-mixer-spaced");
+    button.add_css_class("onyrion-list-row");
+    button.set_tooltip_text(Some(&device_label(item)));
+    if let Some(label) = button.child().and_then(|child| child.downcast::<gtk4::Label>().ok()) {
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.set_max_width_chars(36);
+        label.set_xalign(0.0);
+    }
 
     let name = item.name.clone();
     button.connect_clicked(move |_| {
@@ -289,7 +317,17 @@ fn reconcile_devices(
     items: &[AudioDevice],
     kind: DeviceKind,
 ) {
-    let wanted: HashSet<&str> = items.iter().map(|item| item.name.as_str()).collect();
+    let mut ordered: Vec<&AudioDevice> = items.iter().collect();
+    ordered.sort_by(|left, right| {
+        right
+            .default
+            .cmp(&left.default)
+            .then_with(|| right.configured.cmp(&left.configured))
+            .then_with(|| device_label(left).to_lowercase().cmp(&device_label(right).to_lowercase()))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let wanted: HashSet<&str> = ordered.iter().map(|item| item.name.as_str()).collect();
     let stale: Vec<String> = rows
         .keys()
         .filter(|key| !wanted.contains(key.as_str()))
@@ -302,9 +340,11 @@ fn reconcile_devices(
         }
     }
 
-    for item in items {
+    for item in &ordered {
         if let Some(row) = rows.get(&item.name) {
-            row.button.set_label(&device_label(item));
+            let label = device_label(item);
+            row.button.set_label(&label);
+            row.button.set_tooltip_text(Some(&label));
             continue;
         }
 
@@ -312,19 +352,33 @@ fn reconcile_devices(
         container.append(&row.button);
         rows.insert(item.name.clone(), row);
     }
+
+    let mut previous: Option<gtk4::Widget> = None;
+    for item in ordered {
+        if let Some(row) = rows.get(&item.name) {
+            container.reorder_child_after(&row.button, previous.as_ref());
+            previous = Some(row.button.clone().upcast());
+        }
+    }
 }
 
 fn create_stream_row(host: Arc<dyn EwwiiAPI>, item: &AudioStream, kind: StreamKind) -> StreamRow {
     let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     root.add_css_class("onyrion-audio-mixer-spaced");
+    root.add_css_class("onyrion-list-row");
 
     let label = gtk4::Label::new(Some(&stream_label(item)));
     label.set_hexpand(true);
     label.set_halign(gtk4::Align::Start);
+    label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    label.set_max_width_chars(24);
 
     let down = gtk4::Button::with_label("-");
     let mute = gtk4::Button::with_label("Mute");
     let up = gtk4::Button::with_label("+");
+    down.add_css_class("onyrion-control-compact");
+    mute.add_css_class("onyrion-control-compact");
+    up.add_css_class("onyrion-control-compact");
 
     let serial = item.serial;
     let down_host = host.clone();
@@ -388,7 +442,16 @@ fn reconcile_streams(
     items: &[AudioStream],
     kind: StreamKind,
 ) {
-    let wanted: HashSet<u64> = items.iter().map(|item| item.serial).collect();
+    let mut ordered: Vec<&AudioStream> = items.iter().collect();
+    ordered.sort_by(|left, right| {
+        left
+            .name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.serial.cmp(&right.serial))
+    });
+
+    let wanted: HashSet<u64> = ordered.iter().map(|item| item.serial).collect();
     let stale: Vec<u64> = rows
         .keys()
         .filter(|serial| !wanted.contains(serial))
@@ -401,7 +464,7 @@ fn reconcile_streams(
         }
     }
 
-    for item in items {
+    for item in &ordered {
         if let Some(row) = rows.get(&item.serial) {
             row.label.set_text(&stream_label(item));
             continue;
@@ -410,6 +473,14 @@ fn reconcile_streams(
         let row = create_stream_row(host.clone(), item, kind);
         container.append(&row.root);
         rows.insert(item.serial, row);
+    }
+
+    let mut previous: Option<gtk4::Widget> = None;
+    for item in ordered {
+        if let Some(row) = rows.get(&item.serial) {
+            container.reorder_child_after(&row.root, previous.as_ref());
+            previous = Some(row.root.clone().upcast());
+        }
     }
 }
 
@@ -611,6 +682,6 @@ mod tests {
 
         assert_eq!(state.playback.len(), 1);
         assert_eq!(state.playback[0].serial, 148);
-        assert_eq!(stream_label(&state.playback[0]), "Zen · 0.75 · muted");
+        assert_eq!(stream_label(&state.playback[0]), "Zen · 75% · muted");
     }
 }

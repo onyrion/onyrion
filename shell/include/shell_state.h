@@ -10,6 +10,12 @@ typedef enum shell_window_placement {
     SHELL_WINDOW_PLACEMENT_FLOATING = 2,
 } ShellWindowPlacement;
 
+typedef enum shell_group_placement {
+    SHELL_GROUP_PLACEMENT_UNKNOWN = -1,
+    SHELL_GROUP_PLACEMENT_TILED = 0,
+    SHELL_GROUP_PLACEMENT_FLOATING = 1,
+} ShellGroupPlacement;
+
 typedef struct shell_output_state {
     char *name;
     bool focused;
@@ -41,6 +47,11 @@ typedef struct shell_group_state {
     char *workspace_id;
     bool active;
     uint32_t window_count;
+
+    ShellGroupPlacement placement;
+    bool pinned;
+    char *pinned_output_name;
+    bool placement_seen;
 } ShellGroupState;
 
 typedef struct shell_window_state {
@@ -133,6 +144,18 @@ bool shell_state_add_group(
     const char *workspace_id,
     bool active,
     uint32_t window_count
+);
+
+bool shell_state_set_group_placement(
+    ShellState *state,
+    const char *group_id,
+    ShellGroupPlacement placement,
+    bool pinned,
+    const char *pinned_output_name
+);
+
+const char *shell_group_placement_name(
+    ShellGroupPlacement placement
 );
 
 bool shell_state_add_window(

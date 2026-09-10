@@ -813,22 +813,6 @@ static int run_scan(GDBusConnection *bus) {
         return 1;
     }
 
-    gint64 before = -1;
-    if (!variant_i64(
-                bus,
-                device_path,
-                NM_WIFI_IFACE,
-                "LastScan",
-                &before,
-                &error)) {
-        fprintf(
-            stderr,
-            "WIFI_FAIL scan LastScan: %s\n",
-            error ? error->message : "unknown"
-        );
-        return 1;
-    }
-
     GVariantBuilder options;
     g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
     g_autoptr(GVariant) reply = nm_call(
@@ -849,42 +833,13 @@ static int run_scan(GDBusConnection *bus) {
         return 1;
     }
 
-    bool advanced = false;
-    for (int i = 0; i < 100; i++) {
-        g_usleep(100000);
-        gint64 current = -1;
-        g_clear_error(&error);
-        if (!variant_i64(
-                    bus,
-                    device_path,
-                    NM_WIFI_IFACE,
-                    "LastScan",
-                    &current,
-                    &error)) {
-            continue;
-        }
-        if (current > before) {
-            advanced = true;
-            break;
-        }
-    }
-    if (!advanced) {
-        fprintf(
-            stderr,
-            "WIFI_FAIL RequestScan completed without LastScan advance\n"
-        );
-        return 1;
-    }
-
-    g_clear_error(&error);
-    if (!emit_state(bus, &error)) {
-        fprintf(
-            stderr,
-            "WIFI_FAIL scan state: %s\n",
-            error ? error->message : "unknown"
-        );
-        return 1;
-    }
+    /*
+     * RequestScan is asynchronous.  The long-lived `wifi networks watch`
+     * already observes NetworkManager changes and emits the authoritative
+     * updated list, so blocking here for LastScan convergence only makes the
+     * UI look broken on drivers that update LastScan late or coalesce scans.
+     */
+    fprintf(stdout, "CONTROL_OK wifi scan requested device=%s\n", device);
     return 0;
 }
 
@@ -1755,6 +1710,52 @@ static int run_connect(
     return 0;
 }
 
+
+static int run_disconnect(GDBusConnection *bus) {
+    WifiSnapshot snapshot;
+    g_autoptr(GError) error = NULL;
+
+    if (!query_snapshot(bus, &snapshot, &error)) {
+        fprintf(stderr, "WIFI_FAIL disconnect state: %s\n", error ? error->message : "unknown");
+        return 1;
+    }
+
+    g_autofree char *active_connection = variant_string_dup(
+        bus,
+        snapshot.device_path,
+        NM_DEVICE_IFACE,
+        "ActiveConnection",
+        &error
+    );
+
+    if (!active_connection || g_strcmp0(active_connection, "/") == 0) {
+        fprintf(stdout, "CONTROL_OK wifi disconnected state=noop\n");
+        wifi_snapshot_clear(&snapshot);
+        return 0;
+    }
+
+    g_clear_error(&error);
+    g_autoptr(GVariant) reply = nm_call(
+        bus,
+        NM_PATH,
+        NM_IFACE,
+        "DeactivateConnection",
+        g_variant_new("(o)", active_connection),
+        NULL,
+        &error
+    );
+
+    if (!reply) {
+        fprintf(stderr, "WIFI_FAIL disconnect: %s\n", error ? error->message : "unknown");
+        wifi_snapshot_clear(&snapshot);
+        return 1;
+    }
+
+    fprintf(stdout, "CONTROL_OK wifi disconnected\n");
+    wifi_snapshot_clear(&snapshot);
+    return 0;
+}
+
 bool onyrion_wifi_extended_handles(int argc, char **argv) {
     if (argc < 3 || g_strcmp0(argv[1], "wifi") != 0) {
         return false;
@@ -1762,7 +1763,8 @@ bool onyrion_wifi_extended_handles(int argc, char **argv) {
     if (g_strcmp0(argv[2], "networks") == 0) {
         return true;
     }
-    if (g_strcmp0(argv[2], "connect") == 0) {
+    if (g_strcmp0(argv[2], "connect") == 0 ||
+            g_strcmp0(argv[2], "disconnect") == 0) {
         return true;
     }
     return false;
@@ -1776,7 +1778,9 @@ static void usage(const char *argv0) {
         "  %s wifi networks watch\n"
         "  %s wifi networks scan\n"
         "  %s wifi connect BSSID\n"
-        "  %s wifi connect BSSID --password-stdin\n",
+        "  %s wifi connect BSSID --password-stdin\n"
+        "  %s wifi disconnect\n",
+        argv0,
         argv0,
         argv0,
         argv0,
@@ -1828,6 +1832,12 @@ int onyrion_wifi_extended_cli(int argc, char **argv) {
             g_strcmp0(argv[2], "networks") == 0 &&
             g_strcmp0(argv[3], "scan") == 0) {
         return run_scan(bus);
+    }
+
+    if (argc == 3 &&
+            g_strcmp0(argv[1], "wifi") == 0 &&
+            g_strcmp0(argv[2], "disconnect") == 0) {
+        return run_disconnect(bus);
     }
 
     if ((argc == 4 || argc == 5) &&

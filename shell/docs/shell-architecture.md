@@ -51,9 +51,15 @@ Custom and multiple providers are allowed.
 
 These remain outside generic UI providers:
 
-- compositor-coupled TabGroupUI/window chrome;
 - lock/security surface;
 - emergency/degraded-mode overlay.
+
+TabGroup UI is **not** compositor-owned rich chrome.  Since Core v13 it is a
+Shell-owned Group-attached surface: Shell owns tabs, Group control, RMB,
+overflow/hold policy, application icons and TILED/FLOAT controls.  Core owns
+only Group/Window authority, generic attachment/lifetime/geometry constraints,
+content insets and compositor drag/drop commit.  Legacy Core 24px chrome is a
+fallback until canonical Shell Group geometry authority is present.
 
 ## Failure model
 
@@ -202,3 +208,42 @@ The daemon retains only pending one-shot waiters. A waiter is answered once and
 its socket is closed. Dead waiters are discarded on delivery, and all pending
 waiters are closed during daemon shutdown. The data path is provider-neutral;
 Ewwii is only a consumer of the JSON-lines stream.
+
+
+## Core v13 Group-attached UI integration boundary
+
+The v13 protocol introduces `onyrion_group_surface_v1`,
+`set_group_content_insets`, `begin_window_drag`, `begin_group_drag`,
+`drag_surface_motion` and `set_window_drag_target`.  The final TabGroup UI target
+is Shell-owned and icon-only:
+
+```text
+TILED  [◆] [‹] [APP][APP]… [›] [⛶] [×]
+FLOAT  [◆] [‹] [APP][APP]… [›] [📌] [×]
+```
+
+The viewport is Shell-local state: it moves only in complete tab slots and does
+not change Core active Window/focus.  Active Window changes reveal the active
+icon.  Arrow hold repeats discrete steps with acceleration, a hard maximum
+rate, and no catch-up burst after event-loop stalls.
+
+### Current v13 blockers before the final Ewwii Group-surface renderer
+
+Two transport facts must be resolved without moving UI policy back into Core:
+
+1. `onyrion_group_surface_v1.set_rect(x,y,width,height)` requires the Shell to
+   choose a size, but v13 currently exposes no Group outer width/height or
+   surface `configure` event.  Compositor clipping is not a substitute for
+   client allocation: without the real width the Shell cannot compute exact
+   icon capacity, arrow visibility or full-tab-only overflow.
+2. A Wayland role is assigned per `wl_surface` on the client connection that
+   owns that object.  The persistent `onyrion-shell` daemon and Ewwii are
+   different Wayland clients, so the daemon cannot role an Ewwii GTK surface.
+   The Ewwii integration therefore needs a same-process/same-Wayland-client
+   bridge which applies the Onyrion Group role before GTK assigns a normal
+   XDG/layer role.  A full-output transparent overlay or post-map re-role is not
+   an acceptable substitute.
+
+Until those two transport pieces exist, only provider-independent TabGroup
+policy/model work and unrelated topbar DnD hover activation are wired.  The
+legacy Core chrome remains fallback; no fake final TabGroup surface is mapped.

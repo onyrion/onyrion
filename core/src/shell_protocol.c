@@ -3,6 +3,8 @@
 #include "shell_protocol.h"
 
 #include "group.h"
+#include "group_surface.h"
+#include "input.h"
 #include "layout.h"
 #include "output.h"
 #include "server.h"
@@ -11,6 +13,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -371,6 +374,26 @@ static void send_snapshot(
                     group,
                 wire_count(group->window_count)
             );
+
+            if (wl_resource_get_version(
+                    client->resource) >= 12) {
+                const char *pinned_output_name = "";
+
+                if (group->pinned_output &&
+                        group->pinned_output->wlr_output &&
+                        group->pinned_output->wlr_output->name) {
+                    pinned_output_name =
+                        group->pinned_output->wlr_output->name;
+                }
+
+                onyrion_shell_unstable_v1_send_group_placement(
+                    client->resource,
+                    id,
+                    group->placement,
+                    group->pinned_output != NULL,
+                    pinned_output_name
+                );
+            }
         }
 
         OnyrionWindow *window;
@@ -1416,6 +1439,291 @@ static void handle_move_window_to_workspace(
     );
 }
 
+static void handle_float_group(
+        struct wl_client *wl_client,
+        struct wl_resource *resource,
+        const char *group_id) {
+    (void)wl_client;
+
+    execute_id_action(
+        resource,
+        ONYRION_ACTION_GROUP_FLOAT,
+        ONYRION_SHELL_UNSTABLE_V1_ACTION_GROUP_FLOAT,
+        group_id
+    );
+}
+
+static void handle_tile_group(
+        struct wl_client *wl_client,
+        struct wl_resource *resource,
+        const char *group_id) {
+    (void)wl_client;
+
+    execute_id_action(
+        resource,
+        ONYRION_ACTION_GROUP_TILE,
+        ONYRION_SHELL_UNSTABLE_V1_ACTION_GROUP_TILE,
+        group_id
+    );
+}
+
+static void handle_set_group_pinned(
+        struct wl_client *wl_client,
+        struct wl_resource *resource,
+        const char *group_id,
+        uint32_t pinned) {
+    (void)wl_client;
+
+    OnyrionShellClient *client =
+        shell_client_from_resource(resource);
+
+    if (!client) {
+        return;
+    }
+
+    OnyrionActionRequest request = {
+        .kind = ONYRION_ACTION_GROUP_SET_PINNED,
+        .object_state = {
+            .enabled = pinned != 0,
+        },
+    };
+
+    const bool success =
+        parse_id(
+            group_id,
+            &request.object_state.object_id
+        ) &&
+        onyrion_action_execute(
+            client->server,
+            request
+        );
+
+    send_action_result(
+        resource,
+        ONYRION_SHELL_UNSTABLE_V1_ACTION_GROUP_SET_PINNED,
+        success
+    );
+}
+
+static void handle_get_group_surface(
+        struct wl_client *wl_client,
+        struct wl_resource *resource,
+        uint32_t id,
+        struct wl_resource *surface_resource,
+        const char *group_id,
+        const char *name_space) {
+    OnyrionShellClient *client =
+        shell_client_from_resource(resource);
+
+    uint64_t parsed_group_id = 0;
+
+    if (!client ||
+            !parse_id(group_id, &parsed_group_id)) {
+        wl_resource_post_error(
+            resource,
+            ONYRION_SHELL_UNSTABLE_V1_ERROR_INVALID_GROUP,
+            "invalid Group id"
+        );
+        return;
+    }
+
+    (void)onyrion_group_surface_create(
+        client->server,
+        resource,
+        wl_client,
+        id,
+        surface_resource,
+        parsed_group_id,
+        name_space
+    );
+}
+
+static void handle_set_group_content_insets(
+        struct wl_client *wl_client,
+        struct wl_resource *resource,
+        const char *group_id,
+        uint32_t top,
+        uint32_t right,
+        uint32_t bottom,
+        uint32_t left) {
+    (void)wl_client;
+
+    OnyrionShellClient *client =
+        shell_client_from_resource(resource);
+    uint64_t parsed_group_id = 0;
+
+    if (!client ||
+            !parse_id(group_id, &parsed_group_id)) {
+        wl_resource_post_error(
+            resource,
+            ONYRION_SHELL_UNSTABLE_V1_ERROR_INVALID_GROUP,
+            "invalid Group id"
+        );
+        return;
+    }
+
+    if (top > INT_MAX || right > INT_MAX ||
+            bottom > INT_MAX || left > INT_MAX) {
+        wl_resource_post_error(
+            resource,
+            ONYRION_SHELL_UNSTABLE_V1_ERROR_INVALID_INSETS,
+            "Group content inset exceeds INT_MAX"
+        );
+        return;
+    }
+
+    OnyrionGroup *group =
+        onyrion_group_find_id(client->server, parsed_group_id);
+
+    if (!group) {
+        wl_resource_post_error(
+            resource,
+            ONYRION_SHELL_UNSTABLE_V1_ERROR_INVALID_GROUP,
+            "Group id does not resolve"
+        );
+        return;
+    }
+
+    if (!onyrion_group_set_content_insets(
+            group,
+            resource,
+            (int)top,
+            (int)right,
+            (int)bottom,
+            (int)left)) {
+        wl_resource_post_error(
+            resource,
+            ONYRION_SHELL_UNSTABLE_V1_ERROR_INVALID_INSETS,
+            "Group content insets rejected"
+        );
+    }
+}
+
+static void handle_tab_activate_next(
+        struct wl_client *wl_client,
+        struct wl_resource *resource) {
+    (void)wl_client;
+
+    OnyrionShellClient *client =
+        shell_client_from_resource(resource);
+
+    if (!client) {
+        return;
+    }
+
+    const bool success =
+        onyrion_group_window_next(client->server);
+
+    send_action_result(
+        resource,
+        ONYRION_SHELL_UNSTABLE_V1_ACTION_TAB_ACTIVATE_NEXT,
+        success
+    );
+}
+
+static void handle_tab_activate_previous(
+        struct wl_client *wl_client,
+        struct wl_resource *resource) {
+    (void)wl_client;
+
+    OnyrionShellClient *client =
+        shell_client_from_resource(resource);
+
+    if (!client) {
+        return;
+    }
+
+    const bool success =
+        onyrion_group_window_previous(client->server);
+
+    send_action_result(
+        resource,
+        ONYRION_SHELL_UNSTABLE_V1_ACTION_TAB_ACTIVATE_PREVIOUS,
+        success
+    );
+}
+
+static void handle_begin_window_drag(
+        struct wl_client *wl_client,
+        struct wl_resource *resource,
+        const char *window_id,
+        uint32_t button,
+        uint32_t serial) {
+    OnyrionShellClient *client =
+        shell_client_from_resource(resource);
+    uint64_t parsed_id = 0;
+
+    if (!client || !parse_id(window_id, &parsed_id) ||
+            !onyrion_input_begin_shell_drag(
+                client->server,
+                wl_client,
+                resource,
+                serial,
+                button,
+                false,
+                parsed_id)) {
+        wlr_log(
+            WLR_DEBUG,
+            "Shell window drag request rejected"
+        );
+    }
+}
+
+static void handle_begin_group_drag(
+        struct wl_client *wl_client,
+        struct wl_resource *resource,
+        const char *group_id,
+        uint32_t button,
+        uint32_t serial) {
+    OnyrionShellClient *client =
+        shell_client_from_resource(resource);
+    uint64_t parsed_id = 0;
+
+    if (!client || !parse_id(group_id, &parsed_id) ||
+            !onyrion_input_begin_shell_drag(
+                client->server,
+                wl_client,
+                resource,
+                serial,
+                button,
+                true,
+                parsed_id)) {
+        wlr_log(
+            WLR_DEBUG,
+            "Shell Group drag request rejected"
+        );
+    }
+}
+
+static void handle_set_window_drag_target(
+        struct wl_client *wl_client,
+        struct wl_resource *resource,
+        const char *group_id,
+        const char *reference_window_id,
+        uint32_t kind) {
+    OnyrionShellClient *client =
+        shell_client_from_resource(resource);
+    uint64_t parsed_group_id = 0;
+    uint64_t parsed_reference_id = 0;
+
+    if (!client || !parse_id(group_id, &parsed_group_id)) {
+        return;
+    }
+
+    if (reference_window_id && *reference_window_id &&
+            !parse_id(reference_window_id, &parsed_reference_id)) {
+        return;
+    }
+
+    (void)onyrion_input_set_shell_drag_target(
+        client->server,
+        wl_client,
+        parsed_group_id,
+        parsed_reference_id,
+        (int)kind
+    );
+}
+
 static void handle_session_exit(
         struct wl_client *wl_client,
         struct wl_resource *resource) {
@@ -1708,6 +2016,26 @@ shell_implementation = {
         handle_float_window,
     .tile_window =
         handle_tile_window,
+    .float_group =
+        handle_float_group,
+    .tile_group =
+        handle_tile_group,
+    .set_group_pinned =
+        handle_set_group_pinned,
+    .get_group_surface =
+        handle_get_group_surface,
+    .set_group_content_insets =
+        handle_set_group_content_insets,
+    .tab_activate_next =
+        handle_tab_activate_next,
+    .tab_activate_previous =
+        handle_tab_activate_previous,
+    .begin_window_drag =
+        handle_begin_window_drag,
+    .begin_group_drag =
+        handle_begin_group_drag,
+    .set_window_drag_target =
+        handle_set_window_drag_target,
 };
 
 static void handle_shell_resource_destroy(
@@ -1720,6 +2048,11 @@ static void handle_shell_resource_destroy(
     if (!client) {
         return;
     }
+
+    onyrion_group_surface_owner_destroyed(
+        client->server,
+        resource
+    );
 
     if (client->controller) {
         clear_controller_pending(
@@ -1802,6 +2135,31 @@ static void bind_shell(
     );
 }
 
+void onyrion_shell_protocol_send_drag_surface_motion(
+        struct wl_resource *resource,
+        uint64_t group_id,
+        const char *name_space,
+        double x,
+        double y) {
+    if (!resource || wl_resource_get_version(resource) < 13) {
+        return;
+    }
+
+    char id[32] = {0};
+
+    if (group_id != 0 && !format_id(group_id, id)) {
+        return;
+    }
+
+    onyrion_shell_unstable_v1_send_drag_surface_motion(
+        resource,
+        group_id == 0 ? "" : id,
+        name_space ? name_space : "",
+        wl_fixed_from_double(x),
+        wl_fixed_from_double(y)
+    );
+}
+
 bool onyrion_shell_protocol_init(
         struct onyrion_server *server) {
     wl_list_init(
@@ -1819,7 +2177,7 @@ bool onyrion_shell_protocol_init(
         wl_global_create(
             server->display,
             &onyrion_shell_unstable_v1_interface,
-            11,
+            14,
             server,
             bind_shell
         );
@@ -1834,7 +2192,7 @@ bool onyrion_shell_protocol_init(
 
     wlr_log(
         WLR_INFO,
-        "Shell protocol ready: onyrion_shell_unstable_v1 version=11"
+        "Shell protocol ready: onyrion_shell_unstable_v1 version=14"
     );
 
     return true;

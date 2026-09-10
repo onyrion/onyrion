@@ -30,6 +30,8 @@
 #include "tray_sni.h"
 #include "ui_daily_v11.h"
 #include "ui_runtime.h"
+#include "widget_model.h"
+#include "ewwii_adapter.h"
 
 extern char **environ;
 
@@ -59,6 +61,10 @@ typedef enum shell_command {
     COMMAND_GROUP_MERGE,
     COMMAND_GROUP_MOVE_TO_WORKSPACE,
     COMMAND_GROUP_SPLIT_AT,
+    COMMAND_GROUP_FLOAT,
+    COMMAND_GROUP_TILE,
+    COMMAND_GROUP_PIN,
+    COMMAND_GROUP_UNPIN,
     COMMAND_WINDOW_MOVE_TO_GROUP,
     COMMAND_WINDOW_SPLIT,
     COMMAND_WINDOW_RANGE_MOVE,
@@ -108,6 +114,7 @@ typedef struct shell {
     struct wl_display *display;
     struct wl_registry *registry;
     struct onyrion_shell_unstable_v1 *core;
+    uint32_t core_version;
 
     uint32_t expected_action;
 
@@ -217,6 +224,15 @@ static char *snapshot_to_json(
         json_builder_add_boolean_value(builder, group->active);
         json_builder_set_member_name(builder, "window_count");
         json_builder_add_int_value(builder, group->window_count);
+        json_builder_set_member_name(builder, "placement");
+        json_builder_add_string_value(builder, shell_group_placement_name(group->placement));
+        json_builder_set_member_name(builder, "pinned");
+        json_builder_add_boolean_value(builder, group->pinned);
+        json_builder_set_member_name(builder, "pinned_output_name");
+        json_builder_add_string_value(builder,
+            group->pinned_output_name ? group->pinned_output_name : "");
+        json_builder_set_member_name(builder, "placement_seen");
+        json_builder_add_boolean_value(builder, group->placement_seen);
         json_builder_end_object(builder);
     }
     json_builder_end_array(builder);
@@ -502,9 +518,13 @@ static void print_snapshot(
 
     for (size_t i = 0; i < snapshot->group_count; i++) {
         const ShellGroupState *group = &snapshot->groups[i];
-        printf("GROUP id=%s workspace_id=%s active=%u windows=%u\n",
+        printf("GROUP id=%s workspace_id=%s active=%u windows=%u placement=%s pinned=%u pinned_output=%s placement_seen=%u\n",
             group->id, group->workspace_id,
-            group->active ? 1U : 0U, group->window_count);
+            group->active ? 1U : 0U, group->window_count,
+            shell_group_placement_name(group->placement),
+            group->pinned ? 1U : 0U,
+            group->pinned_output_name ? group->pinned_output_name : "",
+            group->placement_seen ? 1U : 0U);
     }
 
     for (size_t i = 0; i < snapshot->window_count; i++) {
@@ -605,6 +625,52 @@ static void handle_group(
 
         shell->protocol_failed = true;
     }
+}
+
+static void handle_group_placement(
+        void *data,
+        struct onyrion_shell_unstable_v1 *core,
+        const char *group_id,
+        uint32_t placement,
+        uint32_t pinned,
+        const char *pinned_output_name) {
+    (void)core;
+
+    Shell *shell = data;
+    if (!shell->watch_state) {
+        return;
+    }
+
+    if (placement > ONYRION_SHELL_UNSTABLE_V1_GROUP_PLACEMENT_FLOATING ||
+            !shell_state_set_group_placement(
+                &shell->state,
+                group_id,
+                (ShellGroupPlacement)placement,
+                pinned != 0,
+                pinned_output_name)) {
+        fprintf(stderr, "FAIL: invalid group_placement in shell state snapshot\n");
+        shell->protocol_failed = true;
+    }
+}
+
+static void handle_drag_surface_motion(
+        void *data,
+        struct onyrion_shell_unstable_v1 *core,
+        const char *group_id,
+        const char *namespace_name,
+        wl_fixed_t x,
+        wl_fixed_t y) {
+    (void)data;
+    (void)core;
+    (void)group_id;
+    (void)namespace_name;
+    (void)x;
+    (void)y;
+
+    /* The persistent Shell daemon does not own Ewwii wl_surfaces and does not
+     * begin Group-surface drags.  Keep the v13 listener total so an unexpected
+     * event cannot hit a NULL callback; the same-client Ewwii bridge will own
+     * the real drag-surface-motion consumer. */
 }
 
 static void handle_window(
@@ -831,6 +897,125 @@ static void handle_controller_claim_result(
     fflush(stdout);
 }
 
+static bool shell_invoke_action(
+        Shell *shell,
+        const char *capability,
+        const char *action,
+        const char **provider_label,
+        GError **error) {
+    if (provider_label) {
+        *provider_label = "-";
+    }
+
+    if (!shell ||
+            !capability ||
+            !action) {
+        return false;
+    }
+
+    if (strcmp(
+            capability,
+            "ui:dismiss-transients"
+        ) == 0 &&
+            strcmp(
+                action,
+                "pointer-focus"
+            ) == 0) {
+        const char *ui_dir =
+            g_getenv("ONYRION_UI_DIR");
+
+        if (!ui_dir || ui_dir[0] == '\0') {
+            ui_dir =
+                "/usr/share/onyrion/ui/ewwii";
+        }
+
+        if (provider_label) {
+            *provider_label =
+                "shell-transient";
+        }
+
+        return ui_actions_v11_dismiss_transients(
+            ui_dir
+        );
+    }
+
+    if (strcmp(
+            capability,
+            "ui:context-actions"
+        ) == 0) {
+        const char *subject_kind = NULL;
+        const char *subject_id = NULL;
+
+        if (g_str_has_prefix(
+                action,
+                "window:")) {
+            subject_kind = "window";
+            subject_id =
+                action + strlen("window:");
+        } else if (g_str_has_prefix(
+                action,
+                "group:")) {
+            subject_kind = "group";
+            subject_id =
+                action + strlen("group:");
+        }
+
+        const ShellSnapshot *snapshot =
+            shell_state_snapshot(
+                &shell->state
+            );
+        g_autofree char *json =
+            snapshot &&
+            snapshot->generation != 0
+                ? snapshot_to_json(snapshot)
+                : NULL;
+        const char *ui_dir =
+            g_getenv("ONYRION_UI_DIR");
+
+        if (!ui_dir || ui_dir[0] == '\0') {
+            ui_dir =
+                "/usr/share/onyrion/ui/ewwii";
+        }
+
+        if (provider_label) {
+            *provider_label =
+                "shell-context";
+        }
+
+        return subject_kind &&
+            subject_id &&
+            json &&
+            ui_actions_v11_context_open(
+                ui_dir,
+                json,
+                subject_kind,
+                subject_id
+            );
+    }
+
+    if (!shell->providers) {
+        return false;
+    }
+
+    const ProviderConfig *used_provider = NULL;
+    const bool invoked =
+        provider_manager_invoke(
+            shell->providers,
+            capability,
+            action,
+            &used_provider,
+            error
+        );
+
+    if (provider_label &&
+            used_provider) {
+        *provider_label =
+            used_provider->id;
+    }
+
+    return invoked;
+}
+
 static void handle_controller_invoke(
         void *data,
         struct onyrion_shell_unstable_v1 *core,
@@ -840,17 +1025,14 @@ static void handle_controller_invoke(
     Shell *shell = data;
 
     GError *error = NULL;
-    const ProviderConfig *used_provider =
-        NULL;
-
+    const char *provider_label = "-";
     const bool invoked =
         shell->controller_owned &&
-        shell->providers &&
-        provider_manager_invoke(
-            shell->providers,
+        shell_invoke_action(
+            shell,
             capability,
             action,
-            &used_provider,
+            &provider_label,
             &error
         );
 
@@ -858,12 +1040,10 @@ static void handle_controller_invoke(
         "CONTROLLER INVOKE serial=%u capability=%s action=%s "
         "success=%u provider=%s\n",
         serial,
-        capability,
-        action,
+        capability ? capability : "-",
+        action ? action : "-",
         invoked ? 1U : 0U,
-        used_provider
-            ? used_provider->id
-            : "-"
+        provider_label
     );
 
     if (!invoked && error) {
@@ -917,6 +1097,8 @@ core_listener = {
     .workspace_output = handle_workspace_output,
     .workspace_metadata = handle_workspace_metadata,
     .window_placement = handle_window_placement,
+    .group_placement = handle_group_placement,
+    .drag_surface_motion = handle_drag_surface_motion,
     .controller_claim_result =
         handle_controller_claim_result,
     .controller_invoke =
@@ -955,6 +1137,7 @@ static void handle_global(
         );
 
     if (shell->core) {
+        shell->core_version = bind_version;
         onyrion_shell_unstable_v1_add_listener(
             shell->core,
             &core_listener,
@@ -1444,6 +1627,31 @@ static bool parse_ctl_request(
             return request->object_id[0] != '\0';
         }
 
+        if (strcmp(verb, "float") == 0 ||
+                strcmp(verb, "tile") == 0 ||
+                strcmp(verb, "pin") == 0 ||
+                strcmp(verb, "unpin") == 0) {
+            if (index + 1 != argc) {
+                return false;
+            }
+
+            request->object_id = argv[index];
+            request->ctl_namespace = "group";
+            request->ctl_verb = verb;
+
+            if (strcmp(verb, "float") == 0) {
+                request->command = COMMAND_GROUP_FLOAT;
+            } else if (strcmp(verb, "tile") == 0) {
+                request->command = COMMAND_GROUP_TILE;
+            } else if (strcmp(verb, "pin") == 0) {
+                request->command = COMMAND_GROUP_PIN;
+            } else {
+                request->command = COMMAND_GROUP_UNPIN;
+            }
+
+            return request->object_id[0] != '\0';
+        }
+
         return false;
     }
 
@@ -1612,6 +1820,7 @@ static void print_ctl_usage(
         "  %s [--json] watch state|output|workspace|group|window\n"
         "  %s [--json] workspace activate ID|next|previous\n"
         "  %s [--json] group focus ID | split horizontal|vertical | merge SOURCE TARGET | move-to-workspace GROUP WORKSPACE | split-at WINDOW horizontal|vertical\n"
+        "  %s [--json] group float|tile|pin|unpin GROUP\n"
         "  %s [--json] window focus ID|close|fullscreen|next|previous\n"
         "  %s [--json] window move|resize left|right|up|down | move-to-group WINDOW GROUP | split WINDOW horizontal|vertical | move-range FIRST LAST GROUP | move-to-workspace WINDOW WORKSPACE\n"
         "  %s [--json] window float|tile WINDOW\n"
@@ -1628,6 +1837,7 @@ static void print_ctl_usage(
         "  %s [--json] --persist config provider NAME required true|false\n"
         "\n"
         "runtime actions are runtime-only; config mutation requires explicit --persist\n",
+        argv0,
         argv0,
         argv0,
         argv0,
@@ -2186,6 +2396,21 @@ static bool launch_application(
 static bool send_action(
         Shell *shell,
         const ShellRequest *request) {
+    const bool needs_v12_group_control =
+        request->command == COMMAND_GROUP_FLOAT ||
+        request->command == COMMAND_GROUP_TILE ||
+        request->command == COMMAND_GROUP_PIN ||
+        request->command == COMMAND_GROUP_UNPIN;
+
+    if (needs_v12_group_control && shell->core_version < 12) {
+        fprintf(
+            stderr,
+            "FAIL: Core protocol v12 required for group placement/pin (negotiated=%u)\n",
+            shell->core_version
+        );
+        return false;
+    }
+
     switch (request->command) {
     case COMMAND_NEXT:
         shell->expected_action =
@@ -2333,6 +2558,25 @@ static bool send_action(
     case COMMAND_GROUP_SPLIT_AT:
         shell->expected_action = ONYRION_SHELL_UNSTABLE_V1_ACTION_GROUP_SPLIT_AT;
         onyrion_shell_unstable_v1_split_group_at(shell->core, request->object_id, request->orientation);
+        break;
+
+    case COMMAND_GROUP_FLOAT:
+        shell->expected_action = ONYRION_SHELL_UNSTABLE_V1_ACTION_GROUP_FLOAT;
+        onyrion_shell_unstable_v1_float_group(shell->core, request->object_id);
+        break;
+
+    case COMMAND_GROUP_TILE:
+        shell->expected_action = ONYRION_SHELL_UNSTABLE_V1_ACTION_GROUP_TILE;
+        onyrion_shell_unstable_v1_tile_group(shell->core, request->object_id);
+        break;
+
+    case COMMAND_GROUP_PIN:
+    case COMMAND_GROUP_UNPIN:
+        shell->expected_action = ONYRION_SHELL_UNSTABLE_V1_ACTION_GROUP_SET_PINNED;
+        onyrion_shell_unstable_v1_set_group_pinned(
+            shell->core,
+            request->object_id,
+            request->command == COMMAND_GROUP_PIN ? 1U : 0U);
         break;
 
     case COMMAND_WINDOW_MOVE_TO_GROUP:
@@ -3074,14 +3318,14 @@ static bool handle_control_client(
     }
 
     GError *error = NULL;
-    const ProviderConfig *used_provider = NULL;
+    const char *provider_label = "-";
 
     const bool invoked =
-        provider_manager_invoke(
-            shell->providers,
+        shell_invoke_action(
+            shell,
             parts[1],
             parts[2],
-            &used_provider,
+            &provider_label,
             &error
         );
 
@@ -3089,7 +3333,7 @@ static bool handle_control_client(
         g_autofree char *response =
             g_strdup_printf(
                 "OK\t%s\n",
-                used_provider->id
+                provider_label
             );
 
         (void)write_all(
@@ -3516,10 +3760,33 @@ static bool query_daemon_state(
             );
         }
 
-        return daily_ui_v11_sync_apply(
-            ewwii_dir,
-            json
-        );
+        GError *projection_error = NULL;
+        g_autofree char *projected =
+            widget_block_project_json(
+                "bar",
+                json,
+                &projection_error
+            );
+
+        if (!projected) {
+            fprintf(
+                stderr,
+                "FAIL: cannot project Ewwii bar bootstrap state: %s\n",
+                projection_error
+                    ? projection_error->message
+                    : "unknown"
+            );
+            g_clear_error(&projection_error);
+            return false;
+        }
+
+        const bool reconciled =
+            ewwii_adapter_reconcile_bar_roots(
+                ewwii_dir,
+                projected
+            );
+        g_clear_error(&projection_error);
+        return reconciled;
     }
 
     fputs(
@@ -4774,22 +5041,64 @@ static bool watch_daemon_state(
         generation =
             (uint32_t)parsed_generation;
 
-        if (ewwii_config_dir &&
-                !daily_ui_sync_apply(
+        const char *stream_json = parts[2];
+        g_autofree char *projected = NULL;
+
+        if (ewwii_config_dir) {
+            GError *projection_error = NULL;
+            const gint64 started_us = g_get_monotonic_time();
+
+            projected =
+                widget_block_project_json(
+                    "bar",
+                    parts[2],
+                    &projection_error
+                );
+
+            if (!projected) {
+                fprintf(
+                    stderr,
+                    "FAIL: cannot project Ewwii bar state generation=%u: %s\n",
+                    generation,
+                    projection_error
+                        ? projection_error->message
+                        : "unknown"
+                );
+                g_clear_error(&projection_error);
+                g_strfreev(parts);
+                g_string_free(line, true);
+                return false;
+            }
+
+            if (!ewwii_adapter_reconcile_bar_roots(
                     ewwii_config_dir,
-                    parts[2])) {
+                    projected)) {
+                fprintf(
+                    stderr,
+                    "FAIL: Ewwii root lifecycle reconcile failed generation=%u\n",
+                    generation
+                );
+                g_clear_error(&projection_error);
+                g_strfreev(parts);
+                g_string_free(line, true);
+                return false;
+            }
+
+            const gint64 elapsed_us =
+                g_get_monotonic_time() - started_us;
             fprintf(
                 stderr,
-                "FAIL: daily UI C sync failed for generation=%u\n",
-                generation
+                "WIDGET BLOCK bar generation=%u bytes=%zu project_and_roots_us=%" G_GINT64_FORMAT "\n",
+                generation,
+                strlen(projected),
+                elapsed_us
             );
-            g_strfreev(parts);
-            g_string_free(line, true);
-            return false;
+            g_clear_error(&projection_error);
+            stream_json = projected;
         }
 
         fputs(
-            parts[2],
+            stream_json,
             stdout
         );
         fputc(

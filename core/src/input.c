@@ -3,18 +3,21 @@
 #include "fallback.h"
 #include "input.h"
 #include "group.h"
+#include "group_surface.h"
 #include "layout.h"
 #include "output.h"
 #include "layer_shell.h"
 #include "recovery.h"
 #include "server.h"
 #include "session_lock.h"
+#include "shell_protocol.h"
 #include "window.h"
 #include "workspace.h"
 
 #include <ctype.h>
 #include <inttypes.h>
 #include <linux/input-event-codes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wayland-server-core.h>
@@ -34,7 +37,9 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/util/edges.h>
 #include <wlr/util/log.h>
+#include <wlr/xcursor.h>
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -87,16 +92,9 @@ typedef enum onyrion_gesture_kind {
     ONYRION_GESTURE_PINCH,
 } OnyrionGestureKind;
 
-typedef enum onyrion_gesture_axis_lock {
-    ONYRION_GESTURE_LOCK_NONE,
-    ONYRION_GESTURE_LOCK_HORIZONTAL,
-    ONYRION_GESTURE_LOCK_VERTICAL,
-} OnyrionGestureAxisLock;
-
 typedef struct onyrion_gesture_recognizer {
     OnyrionServer *server;
     OnyrionGestureKind kind;
-    OnyrionGestureAxisLock axis_lock;
     uint32_t fingers;
     double dx;
     double dy;
@@ -113,13 +111,11 @@ typedef struct onyrion_gesture_recognizer {
 } OnyrionGestureRecognizer;
 
 enum {
-    ONYRION_GESTURE_DIRECTION_LOCK_THRESHOLD = 24,
-    ONYRION_GESTURE_AMBIGUOUS_CANCEL_THRESHOLD = 72,
     ONYRION_GESTURE_SWIPE_COMMIT_THRESHOLD = 120,
 };
 
-static const double ONYRION_GESTURE_DIRECTION_LOCK_RATIO = 1.5;
-static const double ONYRION_GESTURE_PINCH_COMMIT_THRESHOLD = 0.18;
+static const double ONYRION_GESTURE_FINAL_DIRECTION_RATIO = 2.7;
+static const double ONYRION_GESTURE_PINCH_COMMIT_RATIO = 1.35;
 
 typedef struct onyrion_pointer {
     OnyrionServer *server;
@@ -725,10 +721,16 @@ static bool other_standalone_modifier_down(
 
 static bool standalone_desktop_action_allowed(
         OnyrionServer *server) {
+    /*
+     * A configured standalone modifier binding is compositor-global by
+     * definition.  Layer-shell keyboard focus must not suppress its clean
+     * release, otherwise a shell overlay can open itself and then prevent the
+     * same binding from closing it.  Secure lock and fallback remain hard
+     * boundaries.
+     */
     return
         server &&
         !onyrion_session_lock_active(server) &&
-        !onyrion_layer_shell_has_keyboard_focus(server) &&
         !server->fallback_active;
 }
 
@@ -982,9 +984,7 @@ static void handle_standalone_modifier_key(
         state->action =
             (OnyrionActionRequest){0};
 
-        if (chorded ||
-                !standalone_desktop_action_allowed(
-                    keyboard->server)) {
+        if (chorded) {
             return;
         }
 
@@ -994,7 +994,9 @@ static void handle_standalone_modifier_key(
                 (uint32_t)keysym
             );
 
-        if (!binding) {
+        if (!binding ||
+                !standalone_desktop_action_allowed(
+                    keyboard->server)) {
             return;
         }
 
@@ -1020,14 +1022,14 @@ static void handle_standalone_modifier_key(
         return;
     }
 
+    const OnyrionActionRequest action =
+        state->action;
+
     const bool dispatch =
         state->armed &&
         standalone_desktop_action_allowed(
             keyboard->server
         );
-
-    const OnyrionActionRequest action =
-        state->action;
 
     reset_standalone_modifier_state(
         state
@@ -1387,6 +1389,78 @@ static void reset_chrome_drag(
     server->chrome_drag_origin_x = 0.0;
     server->chrome_drag_origin_y = 0.0;
     server->chrome_drag_active = false;
+    server->chrome_drag_shell_origin = false;
+    server->chrome_drag_shell_client = NULL;
+    server->chrome_drag_shell_resource = NULL;
+    server->chrome_drag_hint_group_id = 0;
+    server->chrome_drag_hint_reference_window_id = 0;
+    server->chrome_drag_hint_kind = 0;
+}
+
+static void cancel_chrome_drag_owner(
+        OnyrionServer *server,
+        OnyrionChromeDragSubject subject,
+        uint64_t id) {
+    if (!server ||
+            !server->chrome_pointer_grab ||
+            subject == ONYRION_CHROME_DRAG_NONE ||
+            id == 0) {
+        return;
+    }
+
+    const bool matches =
+        subject == ONYRION_CHROME_DRAG_WINDOW
+            ? server->chrome_drag_subject ==
+                    ONYRION_CHROME_DRAG_WINDOW &&
+                server->chrome_drag_window_id == id
+            : subject == ONYRION_CHROME_DRAG_GROUP &&
+                server->chrome_drag_group_id == id;
+
+    if (!matches) {
+        return;
+    }
+
+    const OnyrionChromeDragSubject active_subject =
+        server->chrome_drag_subject;
+    const uint64_t window_id =
+        server->chrome_drag_window_id;
+    const uint64_t group_id =
+        server->chrome_drag_group_id;
+
+    reset_chrome_drag(server);
+    onyrion_input_clear_pointer_focus(server);
+    (void)set_default_cursor(server);
+
+    wlr_log(
+        WLR_INFO,
+        "Chrome drag cancelled: subject=%s window=%" PRIu64
+        " group=%" PRIu64 " owner-unavailable=yes",
+        active_subject == ONYRION_CHROME_DRAG_WINDOW
+            ? "window"
+            : "group",
+        window_id,
+        group_id
+    );
+}
+
+void onyrion_input_cancel_chrome_drag_window(
+        OnyrionServer *server,
+        uint64_t window_id) {
+    cancel_chrome_drag_owner(
+        server,
+        ONYRION_CHROME_DRAG_WINDOW,
+        window_id
+    );
+}
+
+void onyrion_input_cancel_chrome_drag_group(
+        OnyrionServer *server,
+        uint64_t group_id) {
+    cancel_chrome_drag_owner(
+        server,
+        ONYRION_CHROME_DRAG_GROUP,
+        group_id
+    );
 }
 
 static void arm_chrome_drag(
@@ -1409,17 +1483,542 @@ static void arm_chrome_drag(
     server->chrome_drag_active = false;
 }
 
+static OnyrionWindow *window_by_id(
+    OnyrionServer *server,
+    uint64_t id
+);
+
+bool onyrion_input_begin_shell_drag(
+        struct onyrion_server *server,
+        struct wl_client *client,
+        struct wl_resource *owner_resource,
+        uint32_t serial,
+        uint32_t button,
+        bool group_drag,
+        uint64_t object_id) {
+    if (!server || !client || !owner_resource || !server->seat || !server->cursor ||
+            serial == 0 || button == 0 || object_id == 0 ||
+            server->chrome_pointer_grab ||
+            server->layout_resize_pointer_grab ||
+            server->window_interaction.kind !=
+                ONYRION_WINDOW_INTERACTION_NONE) {
+        return false;
+    }
+
+    struct wlr_seat_client *seat_client =
+        wlr_seat_client_for_wl_client(server->seat, client);
+
+    if (!seat_client ||
+            !wlr_seat_client_validate_event_serial(seat_client, serial)) {
+        return false;
+    }
+
+    if (group_drag) {
+        OnyrionGroup *group = onyrion_group_find_id(server, object_id);
+
+        if (!group || !group->active || group->active->fullscreen) {
+            return false;
+        }
+
+        arm_chrome_drag(
+            server,
+            ONYRION_CHROME_DRAG_GROUP,
+            0,
+            group->id,
+            button
+        );
+    } else {
+        OnyrionWindow *window = window_by_id(server, object_id);
+
+        if (!window || !window->group ||
+                !window->mapped || window->fullscreen) {
+            return false;
+        }
+
+        arm_chrome_drag(
+            server,
+            ONYRION_CHROME_DRAG_WINDOW,
+            window->id,
+            window->group->id,
+            button
+        );
+    }
+
+    server->chrome_drag_shell_origin = true;
+    server->chrome_drag_shell_client = client;
+    server->chrome_drag_shell_resource = owner_resource;
+
+    wlr_log(
+        WLR_INFO,
+        "Shell drag armed: subject=%s object=%" PRIu64,
+        group_drag ? "group" : "window",
+        object_id
+    );
+
+    return true;
+}
+
+bool onyrion_input_set_shell_drag_target(
+        struct onyrion_server *server,
+        struct wl_client *client,
+        uint64_t group_id,
+        uint64_t reference_window_id,
+        int hint_kind) {
+    if (!server || !client ||
+            !server->chrome_pointer_grab ||
+            !server->chrome_drag_shell_origin ||
+            server->chrome_drag_shell_client != client ||
+            server->chrome_drag_subject != ONYRION_CHROME_DRAG_WINDOW ||
+            hint_kind < 0 || hint_kind > 3) {
+        return false;
+    }
+
+    if (hint_kind == 0) {
+        server->chrome_drag_hint_group_id = 0;
+        server->chrome_drag_hint_reference_window_id = 0;
+        server->chrome_drag_hint_kind = 0;
+        return true;
+    }
+
+    OnyrionGroup *group = onyrion_group_find_id(server, group_id);
+
+    if (!group) {
+        return false;
+    }
+
+    if (hint_kind == 1) {
+        reference_window_id = 0;
+    } else {
+        OnyrionWindow *reference =
+            window_by_id(server, reference_window_id);
+
+        if (!reference || reference->group != group || !reference->mapped) {
+            return false;
+        }
+    }
+
+    server->chrome_drag_hint_group_id = group_id;
+    server->chrome_drag_hint_reference_window_id = reference_window_id;
+    server->chrome_drag_hint_kind = hint_kind;
+    return true;
+}
+
+static OnyrionWindow *window_by_id(
+        OnyrionServer *server,
+        uint64_t id) {
+    if (!server || id == 0) {
+        return NULL;
+    }
+
+    OnyrionWindow *window;
+
+    wl_list_for_each(
+            window,
+            &server->windows,
+            link) {
+        if (window->id == id) {
+            return window;
+        }
+    }
+
+    return NULL;
+}
+
+static const char *window_interaction_kind_name(
+        OnyrionWindowInteractionKind kind) {
+    switch (kind) {
+    case ONYRION_WINDOW_INTERACTION_MOVE:
+        return "move";
+    case ONYRION_WINDOW_INTERACTION_RESIZE:
+        return "resize";
+    case ONYRION_WINDOW_INTERACTION_NONE:
+    default:
+        return "none";
+    }
+}
+
+static bool valid_resize_edges(uint32_t edges) {
+    const uint32_t allowed =
+        WLR_EDGE_TOP |
+        WLR_EDGE_BOTTOM |
+        WLR_EDGE_LEFT |
+        WLR_EDGE_RIGHT;
+
+    return
+        edges != WLR_EDGE_NONE &&
+        (edges & ~allowed) == 0 &&
+        !((edges & WLR_EDGE_LEFT) &&
+            (edges & WLR_EDGE_RIGHT)) &&
+        !((edges & WLR_EDGE_TOP) &&
+            (edges & WLR_EDGE_BOTTOM));
+}
+
+static void reset_window_interaction(
+        OnyrionServer *server) {
+    if (!server) {
+        return;
+    }
+
+    server->window_interaction =
+        (OnyrionWindowInteraction){0};
+}
+
+static OnyrionWindow *window_interaction_window(
+        OnyrionServer *server) {
+    if (!server ||
+            server->window_interaction.kind ==
+                ONYRION_WINDOW_INTERACTION_NONE) {
+        return NULL;
+    }
+
+    OnyrionWindow *window =
+        window_by_id(
+            server,
+            server->window_interaction.window_id
+        );
+
+    return
+        window &&
+        window->mapped &&
+        !window->fullscreen &&
+        window->group &&
+        window->group->placement ==
+            ONYRION_GROUP_PLACEMENT_FLOATING &&
+        window->placement ==
+            ONYRION_WINDOW_PLACEMENT_FLOATING
+            ? window
+            : NULL;
+}
+
+static bool set_window_resize_cursor(
+        OnyrionServer *server,
+        uint32_t edges) {
+    if (!server ||
+            !server->cursor ||
+            !server->xcursor_manager ||
+            !valid_resize_edges(edges)) {
+        return false;
+    }
+
+    const char *name =
+        wlr_xcursor_get_resize_name(edges);
+
+    if (!name) {
+        return false;
+    }
+
+    wlr_cursor_set_xcursor(
+        server->cursor,
+        server->xcursor_manager,
+        name
+    );
+
+    return true;
+}
+
+static void finish_window_interaction(
+        OnyrionServer *server,
+        bool completed) {
+    if (!server ||
+            server->window_interaction.kind ==
+                ONYRION_WINDOW_INTERACTION_NONE) {
+        return;
+    }
+
+    const OnyrionWindowInteraction interaction =
+        server->window_interaction;
+
+    OnyrionWindow *window =
+        window_interaction_window(server);
+
+    if (window &&
+            interaction.kind ==
+                ONYRION_WINDOW_INTERACTION_RESIZE &&
+            window->toplevel->base->initialized) {
+        wlr_xdg_toplevel_set_resizing(
+            window->toplevel,
+            false
+        );
+    }
+
+    const int x = window ? window->x : 0;
+    const int y = window ? window->y : 0;
+    const int width = window ? window->width : 0;
+    const int height = window ? window->height : 0;
+
+    reset_window_interaction(server);
+
+    onyrion_input_clear_pointer_focus(server);
+    (void)set_default_cursor(server);
+
+    if (window && completed) {
+        onyrion_shell_protocol_mark_changed(server);
+    }
+
+    wlr_log(
+        completed ? WLR_INFO : WLR_DEBUG,
+        "Window interaction %s:"
+        " kind=%s"
+        " source=%s"
+        " window=%" PRIu64
+        " edges=%u"
+        " geometry=%dx%d+%d+%d",
+        completed ? "ended" : "cancelled",
+        window_interaction_kind_name(
+            interaction.kind
+        ),
+        interaction.source ==
+                ONYRION_WINDOW_INTERACTION_SOURCE_XDG
+            ? "xdg"
+            : "binding",
+        interaction.window_id,
+        interaction.resize_edges,
+        width,
+        height,
+        x,
+        y
+    );
+}
+
+static bool begin_window_interaction(
+        OnyrionServer *server,
+        OnyrionWindow *window,
+        OnyrionWindowInteractionKind kind,
+        OnyrionWindowInteractionSource source,
+        uint32_t button,
+        uint32_t edges) {
+    if (!server ||
+            !window ||
+            !window->mapped ||
+            window->fullscreen ||
+            window->placement !=
+                ONYRION_WINDOW_PLACEMENT_FLOATING ||
+            kind == ONYRION_WINDOW_INTERACTION_NONE ||
+            onyrion_session_lock_active(server) ||
+            server->fallback_active ||
+            server->chrome_pointer_grab ||
+            server->layout_resize_pointer_grab ||
+            server->window_interaction.kind !=
+                ONYRION_WINDOW_INTERACTION_NONE) {
+        return false;
+    }
+
+    if (kind == ONYRION_WINDOW_INTERACTION_RESIZE &&
+            !valid_resize_edges(edges)) {
+        return false;
+    }
+
+    if (!onyrion_window_focus(window)) {
+        return false;
+    }
+
+    struct wlr_box group_box = {0};
+
+    if (!window->group ||
+            !onyrion_group_box(
+                window->group,
+                &group_box)) {
+        return false;
+    }
+
+    server->window_interaction =
+        (OnyrionWindowInteraction){
+            .kind = kind,
+            .source = source,
+            .button = button,
+            .resize_edges =
+                kind == ONYRION_WINDOW_INTERACTION_RESIZE
+                    ? edges
+                    : WLR_EDGE_NONE,
+            .window_id = window->id,
+            .pointer_origin_x = server->cursor->x,
+            .pointer_origin_y = server->cursor->y,
+            .window_origin_x = group_box.x,
+            .window_origin_y = group_box.y,
+            .window_origin_width = group_box.width,
+            .window_origin_height = group_box.height,
+        };
+
+    if (kind == ONYRION_WINDOW_INTERACTION_RESIZE) {
+        if (window->toplevel->base->initialized) {
+            wlr_xdg_toplevel_set_resizing(
+                window->toplevel,
+                true
+            );
+        }
+
+        (void)set_window_resize_cursor(
+            server,
+            edges
+        );
+    }
+
+    onyrion_input_clear_pointer_focus(server);
+
+    wlr_log(
+        WLR_INFO,
+        "Window interaction armed:"
+        " kind=%s"
+        " source=%s"
+        " window=%" PRIu64
+        " button=%u edges=%u"
+        " geometry=%dx%d+%d+%d",
+        window_interaction_kind_name(kind),
+        source == ONYRION_WINDOW_INTERACTION_SOURCE_XDG
+            ? "xdg"
+            : "binding",
+        window->id,
+        button,
+        kind == ONYRION_WINDOW_INTERACTION_RESIZE
+            ? edges
+            : 0,
+        window->width,
+        window->height,
+        window->x,
+        window->y
+    );
+
+    return true;
+}
+
+bool onyrion_input_begin_window_move(
+        OnyrionServer *server,
+        OnyrionWindow *window,
+        OnyrionWindowInteractionSource source,
+        uint32_t button) {
+    return begin_window_interaction(
+        server,
+        window,
+        ONYRION_WINDOW_INTERACTION_MOVE,
+        source,
+        button,
+        WLR_EDGE_NONE
+    );
+}
+
+bool onyrion_input_begin_window_resize(
+        OnyrionServer *server,
+        OnyrionWindow *window,
+        OnyrionWindowInteractionSource source,
+        uint32_t button,
+        uint32_t edges) {
+    return begin_window_interaction(
+        server,
+        window,
+        ONYRION_WINDOW_INTERACTION_RESIZE,
+        source,
+        button,
+        edges
+    );
+}
+
+void onyrion_input_cancel_window_interaction(
+        OnyrionServer *server,
+        OnyrionWindow *window) {
+    if (!server ||
+            server->window_interaction.kind ==
+                ONYRION_WINDOW_INTERACTION_NONE ||
+            (window &&
+                server->window_interaction.window_id !=
+                    window->id)) {
+        return;
+    }
+
+    finish_window_interaction(
+        server,
+        false
+    );
+}
+
+static uint32_t nearest_resize_corner(
+        const OnyrionServer *server,
+        const OnyrionWindow *window) {
+    if (!server ||
+            !server->cursor ||
+            !window ||
+            !window->group) {
+        return WLR_EDGE_NONE;
+    }
+
+    struct wlr_box box = {0};
+
+    if (!onyrion_group_box(
+            window->group,
+            &box) ||
+            box.width <= 0 ||
+            box.height <= 0) {
+        return WLR_EDGE_NONE;
+    }
+
+    uint32_t edges = 0;
+
+    edges |=
+        server->cursor->x <
+                box.x + box.width / 2.0
+            ? WLR_EDGE_LEFT
+            : WLR_EDGE_RIGHT;
+
+    edges |=
+        server->cursor->y <
+                box.y + box.height / 2.0
+            ? WLR_EDGE_TOP
+            : WLR_EDGE_BOTTOM;
+
+    return edges;
+}
+
+static OnyrionWindow *interactive_window_target(
+        OnyrionServer *server) {
+    OnyrionWindow *window =
+        window_at_cursor(server);
+
+    if (!window) {
+        window = onyrion_window_focused(server);
+    }
+
+    if (!window ||
+            !window->mapped ||
+            window->fullscreen) {
+        return NULL;
+    }
+
+    return window;
+}
+
 static bool arm_interactive_move_active(
         OnyrionServer *server,
         uint32_t button) {
     if (!server ||
-            !server->active_group ||
-            !server->active_group->active ||
-            !server->active_group->active->mapped ||
-            server->active_group->active->fullscreen ||
             server->chrome_pointer_grab ||
             server->layout_resize_pointer_grab ||
-            !server->active_group->tile) {
+            server->window_interaction.kind !=
+                ONYRION_WINDOW_INTERACTION_NONE) {
+        return false;
+    }
+
+    OnyrionWindow *window =
+        interactive_window_target(server);
+
+    if (!window) {
+        return false;
+    }
+
+    if (window->placement ==
+            ONYRION_WINDOW_PLACEMENT_FLOATING) {
+        return onyrion_input_begin_window_move(
+            server,
+            window,
+            ONYRION_WINDOW_INTERACTION_SOURCE_BINDING,
+            button
+        );
+    }
+
+    if (window->placement !=
+                ONYRION_WINDOW_PLACEMENT_TILED ||
+            !window->group ||
+            !window->group->tile ||
+            !onyrion_window_focus(window) ||
+            server->active_group != window->group) {
         return false;
     }
 
@@ -1427,7 +2026,7 @@ static bool arm_interactive_move_active(
         server,
         ONYRION_CHROME_DRAG_GROUP,
         0,
-        server->active_group->id,
+        window->group->id,
         button
     );
 
@@ -1438,7 +2037,7 @@ static bool arm_interactive_move_active(
     wlr_log(
         WLR_INFO,
         "Interactive move active armed: group=%" PRIu64,
-        server->active_group->id
+        window->group->id
     );
 
     return true;
@@ -1543,10 +2142,14 @@ static bool set_resize_cursor(
 static bool resize_target_at_cursor(
         OnyrionServer *server,
         OnyrionLayoutResizeTarget *target) {
-    if (onyrion_group_chrome_at(
+    if (onyrion_group_surface_at(
             server,
             server->cursor->x,
-            server->cursor->y)) {
+            server->cursor->y) ||
+            onyrion_group_chrome_at(
+                server,
+                server->cursor->x,
+                server->cursor->y)) {
         return false;
     }
 
@@ -1574,20 +2177,54 @@ static bool resize_target_at_cursor(
 static bool arm_interactive_resize_active(
         OnyrionServer *server,
         uint32_t button) {
-    OnyrionLayoutResizeTarget target = {0};
-
     if (!server ||
-            !server->active_group ||
-            !server->active_group->active ||
-            !server->active_group->active->mapped ||
-            server->active_group->active->fullscreen ||
             server->chrome_pointer_grab ||
             server->layout_resize_pointer_grab ||
-            !onyrion_layout_resize_active_target_at(
+            server->window_interaction.kind !=
+                ONYRION_WINDOW_INTERACTION_NONE) {
+        return false;
+    }
+
+    OnyrionWindow *window =
+        interactive_window_target(server);
+
+    if (!window) {
+        return false;
+    }
+
+    if (window->placement ==
+            ONYRION_WINDOW_PLACEMENT_FLOATING) {
+        const uint32_t edges =
+            nearest_resize_corner(
                 server,
-                server->cursor->x,
-                server->cursor->y,
-                &target)) {
+                window
+            );
+
+        return onyrion_input_begin_window_resize(
+            server,
+            window,
+            ONYRION_WINDOW_INTERACTION_SOURCE_BINDING,
+            button,
+            edges
+        );
+    }
+
+    if (window->placement !=
+                ONYRION_WINDOW_PLACEMENT_TILED ||
+            !window->group ||
+            !window->group->tile ||
+            !onyrion_window_focus(window) ||
+            server->active_group != window->group) {
+        return false;
+    }
+
+    OnyrionLayoutResizeTarget target = {0};
+
+    if (!onyrion_layout_resize_active_target_at(
+            server,
+            server->cursor->x,
+            server->cursor->y,
+            &target)) {
         return false;
     }
 
@@ -1654,11 +2291,19 @@ static bool execute_pointer_action(
 static OnyrionGroup *group_drop_target_at_cursor(
         OnyrionServer *server) {
     OnyrionGroup *group =
-        onyrion_group_chrome_at(
+        onyrion_group_surface_at(
             server,
             server->cursor->x,
             server->cursor->y
         );
+
+    if (!group) {
+        group = onyrion_group_chrome_at(
+            server,
+            server->cursor->x,
+            server->cursor->y
+        );
+    }
 
     if (group) {
         return group;
@@ -1669,9 +2314,7 @@ static OnyrionGroup *group_drop_target_at_cursor(
 
     return
         window &&
-        window->group &&
-        window->placement ==
-            ONYRION_WINDOW_PLACEMENT_TILED
+        window->group
             ? window->group
             : NULL;
 }
@@ -1709,6 +2352,15 @@ static bool layout_drop_target_at_cursor(
         server->cursor->x;
     const double y =
         server->cursor->y;
+
+    /*
+     * Group chrome is an explicit tab/group drop surface.  Do not let the
+     * generic tile-edge classifier steal drops from the tab strip/handle.
+     */
+    if (onyrion_group_surface_at(server, x, y) ||
+            onyrion_group_chrome_at(server, x, y)) {
+        return false;
+    }
 
     OnyrionGroup *group;
 
@@ -1784,6 +2436,100 @@ static bool layout_drop_target_at_cursor(
     return false;
 }
 
+typedef enum onyrion_chrome_drop_kind {
+    ONYRION_CHROME_DROP_NONE,
+    ONYRION_CHROME_DROP_TAB_INSERT,
+    ONYRION_CHROME_DROP_LAYOUT,
+    ONYRION_CHROME_DROP_GROUP,
+} OnyrionChromeDropKind;
+
+typedef struct onyrion_chrome_drop_target {
+    OnyrionChromeDropKind kind;
+    OnyrionGroupInsertTarget insert;
+    LayoutDropTarget layout;
+    uint64_t group_id;
+} OnyrionChromeDropTarget;
+
+static OnyrionChromeDropTarget chrome_drop_target_at_cursor(
+        OnyrionServer *server,
+        OnyrionChromeDragSubject subject) {
+    OnyrionChromeDropTarget target = {0};
+
+    if (!server ||
+            subject == ONYRION_CHROME_DRAG_NONE) {
+        return target;
+    }
+
+    if (subject == ONYRION_CHROME_DRAG_WINDOW &&
+            server->chrome_drag_shell_origin &&
+            server->chrome_drag_hint_kind != 0) {
+        OnyrionGroup *surface_group =
+            onyrion_group_surface_at(
+                server,
+                server->cursor->x,
+                server->cursor->y
+            );
+
+        if (surface_group &&
+                surface_group->id == server->chrome_drag_hint_group_id) {
+            if (server->chrome_drag_hint_kind == 1) {
+                target.kind = ONYRION_CHROME_DROP_GROUP;
+                target.group_id = surface_group->id;
+                return target;
+            }
+
+            if (server->chrome_drag_hint_reference_window_id != 0) {
+                target.kind = ONYRION_CHROME_DROP_TAB_INSERT;
+                target.group_id = surface_group->id;
+                target.insert = (OnyrionGroupInsertTarget){
+                    .group_id = surface_group->id,
+                    .reference_window_id =
+                        server->chrome_drag_hint_reference_window_id,
+                    .side = server->chrome_drag_hint_kind == 2
+                        ? ONYRION_GROUP_INSERT_BEFORE
+                        : ONYRION_GROUP_INSERT_AFTER,
+                };
+                return target;
+            }
+        }
+    }
+
+    if (subject == ONYRION_CHROME_DRAG_WINDOW &&
+            onyrion_group_insert_target_at(
+                server,
+                server->cursor->x,
+                server->cursor->y,
+                &target.insert)) {
+        target.kind =
+            ONYRION_CHROME_DROP_TAB_INSERT;
+        target.group_id = target.insert.group_id;
+        return target;
+    }
+
+    if (layout_drop_target_at_cursor(
+            server,
+            &target.layout)) {
+        target.kind =
+            ONYRION_CHROME_DROP_LAYOUT;
+        target.group_id =
+            target.layout.group
+                ? target.layout.group->id
+                : 0;
+        return target;
+    }
+
+    OnyrionGroup *group =
+        group_drop_target_at_cursor(server);
+
+    if (group) {
+        target.kind =
+            ONYRION_CHROME_DROP_GROUP;
+        target.group_id = group->id;
+    }
+
+    return target;
+}
+
 static void update_drag_icon_positions(
         OnyrionServer *server) {
     if (!server->drag_icons) {
@@ -1804,6 +2550,50 @@ static void update_drag_icon_positions(
     }
 }
 
+static bool route_pointer_to_scene_surface(
+        OnyrionServer *server,
+        uint32_t time_msec) {
+    double sx = 0.0;
+    double sy = 0.0;
+
+    struct wlr_scene_node *node = wlr_scene_node_at(
+        &server->scene->tree.node,
+        server->cursor->x,
+        server->cursor->y,
+        &sx,
+        &sy
+    );
+
+    if (!node || node->type != WLR_SCENE_NODE_BUFFER) {
+        wlr_seat_pointer_notify_clear_focus(server->seat);
+        return false;
+    }
+
+    struct wlr_scene_buffer *scene_buffer =
+        wlr_scene_buffer_from_node(node);
+    struct wlr_scene_surface *scene_surface =
+        wlr_scene_surface_try_from_buffer(scene_buffer);
+
+    if (!scene_surface) {
+        wlr_seat_pointer_notify_clear_focus(server->seat);
+        return false;
+    }
+
+    wlr_seat_pointer_notify_enter(
+        server->seat,
+        scene_surface->surface,
+        sx,
+        sy
+    );
+    wlr_seat_pointer_notify_motion(
+        server->seat,
+        time_msec,
+        sx,
+        sy
+    );
+    return true;
+}
+
 static void process_cursor_motion(
         OnyrionServer *server,
         uint32_t time_msec) {
@@ -1819,6 +2609,77 @@ static void process_cursor_motion(
             server,
             output
         );
+    }
+
+    if (server->window_interaction.kind !=
+            ONYRION_WINDOW_INTERACTION_NONE) {
+        if (onyrion_session_lock_active(server)) {
+            finish_window_interaction(
+                server,
+                false
+            );
+        } else {
+            OnyrionWindow *window =
+                window_interaction_window(
+                    server
+                );
+
+            if (window) {
+                const OnyrionWindowInteraction *interaction =
+                    &server->window_interaction;
+
+                const int dx =
+                    (int)(
+                        server->cursor->x -
+                        interaction->pointer_origin_x
+                    );
+
+                const int dy =
+                    (int)(
+                        server->cursor->y -
+                        interaction->pointer_origin_y
+                    );
+
+                bool applied = false;
+
+                if (interaction->kind ==
+                        ONYRION_WINDOW_INTERACTION_MOVE) {
+                    applied =
+                        onyrion_window_set_floating_geometry(
+                            window,
+                            interaction->window_origin_x + dx,
+                            interaction->window_origin_y + dy,
+                            interaction->window_origin_width,
+                            interaction->window_origin_height
+                        );
+                } else if (interaction->kind ==
+                        ONYRION_WINDOW_INTERACTION_RESIZE) {
+                    applied =
+                        onyrion_window_resize_floating_from_edges(
+                            window,
+                            interaction->window_origin_x,
+                            interaction->window_origin_y,
+                            interaction->window_origin_width,
+                            interaction->window_origin_height,
+                            interaction->resize_edges,
+                            dx,
+                            dy
+                        );
+                }
+
+                if (applied) {
+                    clear_pointer_focus_preserve_cursor(
+                        server
+                    );
+                    return;
+                }
+            }
+
+            finish_window_interaction(
+                server,
+                false
+            );
+        }
     }
 
     if (server->layout_resize_pointer_grab) {
@@ -1934,61 +2795,79 @@ static void process_cursor_motion(
                 }
             }
 
-            onyrion_input_clear_pointer_focus(
-                server
-            );
+            if (server->chrome_drag_shell_origin) {
+                uint64_t surface_group_id = 0;
+                const char *surface_namespace = NULL;
+                double surface_x = 0.0;
+                double surface_y = 0.0;
+                const bool over_shell_surface =
+                    onyrion_group_surface_motion_target(
+                        server,
+                        server->cursor->x,
+                        server->cursor->y,
+                        &surface_group_id,
+                        &surface_namespace,
+                        &surface_x,
+                        &surface_y
+                    );
+
+                onyrion_shell_protocol_send_drag_surface_motion(
+                    server->chrome_drag_shell_resource,
+                    over_shell_surface ? surface_group_id : 0,
+                    over_shell_surface ? surface_namespace : "",
+                    over_shell_surface ? surface_x : 0.0,
+                    over_shell_surface ? surface_y : 0.0
+                );
+
+                if (!over_shell_surface) {
+                    server->chrome_drag_hint_group_id = 0;
+                    server->chrome_drag_hint_reference_window_id = 0;
+                    server->chrome_drag_hint_kind = 0;
+                    onyrion_input_clear_pointer_focus(server);
+                    return;
+                }
+
+                if (surface_group_id !=
+                        server->chrome_drag_hint_group_id) {
+                    server->chrome_drag_hint_group_id = 0;
+                    server->chrome_drag_hint_reference_window_id = 0;
+                    server->chrome_drag_hint_kind = 0;
+                }
+
+                (void)route_pointer_to_scene_surface(server, time_msec);
+                return;
+            }
+
+            onyrion_input_clear_pointer_focus(server);
             return;
         }
     }
 
-    double sx;
-    double sy;
+    if (!onyrion_session_lock_active(server) &&
+            !server->fallback_active &&
+            !server->chrome_pointer_grab &&
+            !server->layout_resize_pointer_grab &&
+            server->window_interaction.kind ==
+                ONYRION_WINDOW_INTERACTION_NONE &&
+            !onyrion_layer_shell_has_keyboard_focus(server)) {
+        OnyrionWindow *hover_window =
+            window_at_cursor(server);
+        OnyrionWindow *focused_window =
+            onyrion_window_focused(server);
 
-    struct wlr_scene_node *node =
-        wlr_scene_node_at(
-            &server->scene->tree.node,
-            server->cursor->x,
-            server->cursor->y,
-            &sx,
-            &sy
-        );
-
-    if (!node ||
-            node->type != WLR_SCENE_NODE_BUFFER) {
-        wlr_seat_pointer_notify_clear_focus(
-            server->seat
-        );
-        return;
+        if (hover_window &&
+                hover_window != focused_window &&
+                onyrion_window_focus(hover_window)) {
+            wlr_log(
+                WLR_DEBUG,
+                "Pointer focus follows mouse:"
+                " window=%" PRIu64,
+                hover_window->id
+            );
+        }
     }
 
-    struct wlr_scene_buffer *scene_buffer =
-        wlr_scene_buffer_from_node(node);
-
-    struct wlr_scene_surface *scene_surface =
-        wlr_scene_surface_try_from_buffer(
-            scene_buffer
-        );
-
-    if (!scene_surface) {
-        wlr_seat_pointer_notify_clear_focus(
-            server->seat
-        );
-        return;
-    }
-
-    wlr_seat_pointer_notify_enter(
-        server->seat,
-        scene_surface->surface,
-        sx,
-        sy
-    );
-
-    wlr_seat_pointer_notify_motion(
-        server->seat,
-        time_msec,
-        sx,
-        sy
-    );
+    (void)route_pointer_to_scene_surface(server, time_msec);
 }
 
 static void handle_cursor_motion(
@@ -2107,6 +2986,57 @@ static void handle_cursor_button(
         }
     }
 
+    if (server->window_interaction.kind !=
+            ONYRION_WINDOW_INTERACTION_NONE) {
+        const OnyrionWindowInteraction interaction =
+            server->window_interaction;
+
+        if (interaction.source ==
+                ONYRION_WINDOW_INTERACTION_SOURCE_XDG) {
+            /*
+             * The initiating press already belongs to wlroots/client state.
+             * Keep forwarding the interaction's button stream so wlroots
+             * maintains pointer_state.button_count correctly.  An XDG
+             * move/resize owns the pointer until all pressed buttons are up,
+             * matching the seat-operation lifetime used by mature wlroots
+             * compositors.
+             */
+            wlr_seat_pointer_notify_button(
+                server->seat,
+                event->time_msec,
+                event->button,
+                event->state
+            );
+
+            if (event->state ==
+                    WL_POINTER_BUTTON_STATE_RELEASED &&
+                    server->seat->pointer_state.button_count == 0) {
+                finish_window_interaction(
+                    server,
+                    true
+                );
+            }
+
+            return;
+        }
+
+        /*
+         * A compositor binding owns its pointer-button stream.  Do not let
+         * extra presses escape into client/chrome handling while a floating
+         * move/resize is active; only releasing the initiating button ends it.
+         */
+        if (event->state ==
+                WL_POINTER_BUTTON_STATE_RELEASED &&
+                event->button == interaction.button) {
+            finish_window_interaction(
+                server,
+                true
+            );
+        }
+
+        return;
+    }
+
     if (event->state ==
             WL_POINTER_BUTTON_STATE_RELEASED &&
             server->layout_resize_pointer_grab &&
@@ -2190,50 +3120,46 @@ static void handle_cursor_button(
             return;
         }
 
-        LayoutDropTarget layout_target = {0};
-
-        const bool has_layout_target =
-            was_drag &&
-            layout_drop_target_at_cursor(
-                server,
-                &layout_target
-            );
-
-        OnyrionGroup *target =
-            was_drag && !has_layout_target
-                ? group_drop_target_at_cursor(
-                    server
+        const OnyrionChromeDropTarget drop_target =
+            was_drag
+                ? chrome_drop_target_at_cursor(
+                    server,
+                    subject
                 )
-                : NULL;
-
-        const uint64_t target_group_id =
-            target
-                ? target->id
-                : 0;
-
-        const uint64_t layout_target_group_id =
-            has_layout_target
-                ? layout_target.group->id
-                : 0;
+                : (OnyrionChromeDropTarget){0};
 
         reset_chrome_drag(server);
 
         bool changed = false;
 
-        if (was_drag &&
-                has_layout_target) {
+        switch (drop_target.kind) {
+        case ONYRION_CHROME_DROP_TAB_INSERT:
+            if (subject ==
+                    ONYRION_CHROME_DRAG_WINDOW) {
+                changed =
+                    onyrion_group_move_window_relative_id(
+                        server,
+                        window_id,
+                        drop_target.insert.
+                            reference_window_id,
+                        drop_target.insert.side
+                    );
+            }
+            break;
+
+        case ONYRION_CHROME_DROP_LAYOUT:
             if (subject ==
                     ONYRION_CHROME_DRAG_WINDOW) {
                 changed =
                     onyrion_group_move_window_to_layout_zone_id(
                         server,
                         window_id,
-                        layout_target_group_id,
-                        layout_target.direction
+                        drop_target.group_id,
+                        drop_target.layout.direction
                     );
             } else if (subject ==
                     ONYRION_CHROME_DRAG_GROUP &&
-                    layout_target_group_id !=
+                    drop_target.group_id !=
                         source_group_id) {
                 OnyrionGroup *source =
                     group_by_id(
@@ -2245,21 +3171,26 @@ static void handle_cursor_button(
                     source &&
                     onyrion_layout_move_group_relative(
                         source,
-                        layout_target.group,
-                        layout_target.direction
+                        drop_target.layout.group,
+                        drop_target.layout.direction
                     );
             }
-        } else if (was_drag &&
-                target_group_id != 0 &&
-                target_group_id !=
-                    source_group_id) {
+            break;
+
+        case ONYRION_CHROME_DROP_GROUP:
+            if (drop_target.group_id == 0 ||
+                    drop_target.group_id ==
+                        source_group_id) {
+                break;
+            }
+
             if (subject ==
                     ONYRION_CHROME_DRAG_WINDOW) {
                 changed =
                     onyrion_group_move_window_id(
                         server,
                         window_id,
-                        target_group_id
+                        drop_target.group_id
                     );
             } else if (subject ==
                     ONYRION_CHROME_DRAG_GROUP) {
@@ -2267,32 +3198,14 @@ static void handle_cursor_button(
                     onyrion_group_merge_id(
                         server,
                         source_group_id,
-                        target_group_id
+                        drop_target.group_id
                     );
             }
-        }
+            break;
 
-        if (was_drag &&
-                has_layout_target) {
-            wlr_log(
-                WLR_INFO,
-                "Chrome drag layout-drop:"
-                " subject=%s"
-                " window=%" PRIu64
-                " source_group=%" PRIu64
-                " target_group=%" PRIu64
-                " direction=%d"
-                " changed=%s",
-                subject ==
-                    ONYRION_CHROME_DRAG_WINDOW
-                    ? "window"
-                    : "group",
-                window_id,
-                source_group_id,
-                layout_target_group_id,
-                (int)layout_target.direction,
-                changed ? "yes" : "no"
-            );
+        case ONYRION_CHROME_DROP_NONE:
+        default:
+            break;
         }
 
         if (was_drag) {
@@ -2302,7 +3215,11 @@ static void handle_cursor_button(
                 " subject=%s"
                 " window=%" PRIu64
                 " source_group=%" PRIu64
+                " target_kind=%d"
                 " target_group=%" PRIu64
+                " reference=%" PRIu64
+                " side=%d"
+                " direction=%d"
                 " changed=%s",
                 subject ==
                     ONYRION_CHROME_DRAG_WINDOW
@@ -2310,7 +3227,14 @@ static void handle_cursor_button(
                     : "group",
                 window_id,
                 source_group_id,
-                target_group_id,
+                (int)drop_target.kind,
+                drop_target.group_id,
+                drop_target.insert.reference_window_id,
+                (int)drop_target.insert.side,
+                drop_target.kind ==
+                        ONYRION_CHROME_DROP_LAYOUT
+                    ? (int)drop_target.layout.direction
+                    : -1,
                 changed ? "yes" : "no"
             );
         }
@@ -2397,6 +3321,103 @@ static void handle_cursor_button(
                 }
 
                 return;
+            }
+
+            if (onyrion_group_surface_at(
+                    server,
+                    server->cursor->x,
+                    server->cursor->y)) {
+                wlr_seat_pointer_notify_button(
+                    server->seat,
+                    event->time_msec,
+                    event->button,
+                    event->state
+                );
+                return;
+            }
+
+            if (event->button == BTN_RIGHT) {
+                OnyrionGroup *handle =
+                    onyrion_group_handle_at(
+                        server,
+                        server->cursor->x,
+                        server->cursor->y
+                    );
+
+                OnyrionWindow *tab =
+                    handle
+                        ? NULL
+                        : onyrion_group_tab_at(
+                            server,
+                            server->cursor->x,
+                            server->cursor->y
+                        );
+
+                if (handle || tab) {
+                    if (!pointer_capture_begin(
+                            source_pointer,
+                            event->button,
+                            NULL)) {
+                        wlr_log(
+                            WLR_ERROR,
+                            "Context action pointer capture unavailable:"
+                            " button=%u",
+                            event->button
+                        );
+
+                        return;
+                    }
+
+                    char action[64] = {0};
+
+                    if (handle) {
+                        if (handle->active) {
+                            (void)onyrion_window_focus(
+                                handle->active
+                            );
+                        }
+
+                        (void)snprintf(
+                            action,
+                            sizeof(action),
+                            "group:%" PRIu64,
+                            handle->id
+                        );
+                    } else {
+                        (void)onyrion_window_focus(tab);
+
+                        (void)snprintf(
+                            action,
+                            sizeof(action),
+                            "window:%" PRIu64,
+                            tab->id
+                        );
+                    }
+
+                    onyrion_input_clear_pointer_focus(
+                        server
+                    );
+
+                    const bool invoked =
+                        onyrion_shell_protocol_invoke(
+                            server,
+                            "ui:context-actions",
+                            action
+                        );
+
+                    wlr_log(
+                        invoked ? WLR_INFO : WLR_ERROR,
+                        "Chrome context action:"
+                        " subject=%s"
+                        " id=%s"
+                        " invoked=%s",
+                        handle ? "group" : "window",
+                        action,
+                        invoked ? "yes" : "no"
+                    );
+
+                    return;
+                }
             }
 
             if (event->button == BTN_LEFT) {
@@ -2540,6 +3561,29 @@ static void handle_cursor_button(
                 }
             }
 
+            /*
+             * This is the ordinary uncaptured click path: layer-shell hits,
+             * compositor pointer bindings, context actions, chrome drags and
+             * layout-border grabs have already returned above. Tell Shell
+             * that a click landed outside its transient UI, but continue to
+             * the normal client focus/button delivery below.
+             */
+            if (!server->fallback_active) {
+                const bool invoked =
+                    onyrion_shell_protocol_invoke(
+                        server,
+                        "ui:dismiss-transients",
+                        "pointer-focus"
+                    );
+
+                wlr_log(
+                    WLR_DEBUG,
+                    "Transient click-away boundary:"
+                    " invoked=%s",
+                    invoked ? "yes" : "no"
+                );
+            }
+
             OnyrionWindow *window =
                 window_at_cursor(server);
 
@@ -2643,7 +3687,6 @@ static void gesture_reset(
     }
 
     gesture->kind = ONYRION_GESTURE_NONE;
-    gesture->axis_lock = ONYRION_GESTURE_LOCK_NONE;
     gesture->fingers = 0;
     gesture->dx = 0.0;
     gesture->dy = 0.0;
@@ -2663,52 +3706,6 @@ static bool gestures_allowed(
 
 static double absolute_double(double value) {
     return value < 0.0 ? -value : value;
-}
-
-static void gesture_update_axis_lock(
-        OnyrionGestureRecognizer *gesture) {
-    if (!gesture ||
-            gesture->axis_lock != ONYRION_GESTURE_LOCK_NONE ||
-            gesture->cancelled) {
-        return;
-    }
-
-    const double ax = absolute_double(gesture->dx);
-    const double ay = absolute_double(gesture->dy);
-    const double major = ax > ay ? ax : ay;
-
-    if (major <
-            (double)ONYRION_GESTURE_DIRECTION_LOCK_THRESHOLD) {
-        return;
-    }
-
-    if (ax >= ay * ONYRION_GESTURE_DIRECTION_LOCK_RATIO) {
-        gesture->axis_lock = ONYRION_GESTURE_LOCK_HORIZONTAL;
-    } else if (ay >= ax * ONYRION_GESTURE_DIRECTION_LOCK_RATIO) {
-        gesture->axis_lock = ONYRION_GESTURE_LOCK_VERTICAL;
-    } else if (major >=
-            (double)ONYRION_GESTURE_AMBIGUOUS_CANCEL_THRESHOLD) {
-        gesture->cancelled = true;
-
-        wlr_log(
-            WLR_DEBUG,
-            "Gesture cancelled: ambiguous direction dx=%.3f dy=%.3f",
-            gesture->dx,
-            gesture->dy
-        );
-    }
-
-    if (gesture->axis_lock != ONYRION_GESTURE_LOCK_NONE) {
-        wlr_log(
-            WLR_DEBUG,
-            "Gesture direction locked: axis=%s dx=%.3f dy=%.3f",
-            gesture->axis_lock == ONYRION_GESTURE_LOCK_HORIZONTAL
-                ? "horizontal"
-                : "vertical",
-            gesture->dx,
-            gesture->dy
-        );
-    }
 }
 
 static bool gesture_commit(
@@ -2803,7 +3800,6 @@ static void handle_swipe_update(
 
     gesture->dx += event->dx;
     gesture->dy += event->dy;
-    gesture_update_axis_lock(gesture);
 }
 
 static void handle_swipe_end(
@@ -2823,48 +3819,50 @@ static void handle_swipe_end(
 
     const double ax = absolute_double(gesture->dx);
     const double ay = absolute_double(gesture->dy);
+    const double major = ax > ay ? ax : ay;
+    const double minor = ax > ay ? ay : ax;
 
-    if (gesture->axis_lock == ONYRION_GESTURE_LOCK_HORIZONTAL &&
-            ax >= (double)ONYRION_GESTURE_SWIPE_COMMIT_THRESHOLD) {
-        const OnyrionGestureDirection direction =
-            gesture->dx < 0.0
+    if (major < (double)ONYRION_GESTURE_SWIPE_COMMIT_THRESHOLD) {
+        wlr_log(
+            WLR_DEBUG,
+            "Gesture swipe distance cancelled: dx=%.3f dy=%.3f major=%.3f",
+            gesture->dx,
+            gesture->dy,
+            major
+        );
+        gesture_reset(gesture);
+        return;
+    }
+
+    if (minor > 0.0 &&
+            major < minor * ONYRION_GESTURE_FINAL_DIRECTION_RATIO) {
+        wlr_log(
+            WLR_DEBUG,
+            "Gesture swipe direction cancelled: dx=%.3f dy=%.3f dominance=%.3f",
+            gesture->dx,
+            gesture->dy,
+            major / minor
+        );
+        gesture_reset(gesture);
+        return;
+    }
+
+    const bool horizontal = ax >= ay;
+    const OnyrionGestureDirection direction =
+        horizontal
+            ? (gesture->dx < 0.0
                 ? ONYRION_GESTURE_LEFT
-                : ONYRION_GESTURE_RIGHT;
-
-        if (!gesture_commit(
-                gesture,
-                ONYRION_INPUT_BINDING_GESTURE_SWIPE,
-                direction)) {
-            gesture_reset(gesture);
-        }
-        return;
-    }
-
-    if (gesture->axis_lock == ONYRION_GESTURE_LOCK_VERTICAL &&
-            ay >= (double)ONYRION_GESTURE_SWIPE_COMMIT_THRESHOLD) {
-        const OnyrionGestureDirection direction =
-            gesture->dy < 0.0
+                : ONYRION_GESTURE_RIGHT)
+            : (gesture->dy < 0.0
                 ? ONYRION_GESTURE_UP
-                : ONYRION_GESTURE_DOWN;
+                : ONYRION_GESTURE_DOWN);
 
-        if (!gesture_commit(
-                gesture,
-                ONYRION_INPUT_BINDING_GESTURE_SWIPE,
-                direction)) {
-            gesture_reset(gesture);
-        }
-        return;
+    if (!gesture_commit(
+            gesture,
+            ONYRION_INPUT_BINDING_GESTURE_SWIPE,
+            direction)) {
+        gesture_reset(gesture);
     }
-
-    wlr_log(
-        WLR_DEBUG,
-        "Gesture swipe threshold cancelled: dx=%.3f dy=%.3f lock=%d",
-        gesture->dx,
-        gesture->dy,
-        (int)gesture->axis_lock
-    );
-
-    gesture_reset(gesture);
 }
 
 static void handle_pinch_begin(
@@ -2927,14 +3925,17 @@ static void handle_pinch_end(
         return;
     }
 
-    const double scale_delta =
-        absolute_double(gesture->scale - 1.0);
+    const double scale_ratio =
+        gesture->scale < 1.0
+            ? 1.0 / gesture->scale
+            : gesture->scale;
 
-    if (scale_delta < ONYRION_GESTURE_PINCH_COMMIT_THRESHOLD) {
+    if (scale_ratio < ONYRION_GESTURE_PINCH_COMMIT_RATIO) {
         wlr_log(
             WLR_DEBUG,
-            "Gesture pinch threshold cancelled: scale=%.4f",
-            gesture->scale
+            "Gesture pinch ratio cancelled: scale=%.4f ratio=%.4f",
+            gesture->scale,
+            scale_ratio
         );
         gesture_reset(gesture);
         return;
@@ -3779,10 +4780,16 @@ static bool add_keyboard(
 
     update_seat_capabilities(server);
 
-    onyrion_input_focus_window(
-        server,
-        active_window(server)
-    );
+    if (onyrion_session_lock_active(server)) {
+        onyrion_session_lock_refresh_keyboard_focus(
+            server
+        );
+    } else {
+        onyrion_input_focus_window(
+            server,
+            active_window(server)
+        );
+    }
 
     wlr_log(
         WLR_INFO,
